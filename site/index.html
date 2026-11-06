@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open CRM: a self-hosted CRM with a built-in MCP server</title>
+<meta name="description" content="A simple, extensible, AI-native CRM you host yourself. Run it as it is, or fork it and build exactly the CRM you want. One Docker container plus Postgres, with a built-in MCP server.">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Open CRM: Your server. Your data. Your agents.">
+<meta property="og:description" content="A simple, extensible, AI-native CRM you host yourself. Use it as is, or fork it and build your own.">
+<meta property="og:url" content="https://housewithbricks.github.io/open-crm/">
+<meta property="og:image" content="https://housewithbricks.github.io/open-crm/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Open CRM: Your server. Your data. Your agents.">
+<meta name="twitter:description" content="A simple, extensible, AI-native CRM you host yourself. Use it as is, or fork it and build your own.">
+<meta name="twitter:image" content="https://housewithbricks.github.io/open-crm/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#ffffff;--fg:#18181b;--fg-2:#52525b;--muted:#71717a;--line:#e4e4e7;
+  --code-bg:#f4f4f5;--accent:#4f46e5;--btn:#4f46e5;--btn-hover:#4338ca;
+  --mark-a:#4f46e5;--mark-b:#0d9488;--mark-c:#0f172a;
+  --sans:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111111;--fg:#ededed;--fg-2:#a1a1aa;--muted:#8b8b93;--line:#2a2a2e;
+    --code-bg:#1b1b1d;--accent:#818cf8;--btn:#4f46e5;--btn-hover:#5b54ea;
+    --mark-a:#a5b4fc;--mark-b:#2dd4bf;--mark-c:#f8fafc;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:688px;margin:0 auto;padding:0 24px}
+
+header .wrap{display:flex;align-items:center;justify-content:space-between;height:72px}
+.brand{display:inline-flex;align-items:center;gap:8px;color:var(--fg);font-weight:600;font-size:17px}
+.brand:hover{text-decoration:none}
+.brand svg{width:24px;height:24px;display:block}
+nav{display:flex;gap:24px;font-size:15px}
+nav a{color:var(--fg-2)}
+nav a:hover{color:var(--fg);text-decoration:none}
+
+h1{font-size:40px;line-height:1.15;font-weight:600;letter-spacing:-.02em;margin:0 0 20px}
+h2{font-size:22px;line-height:1.3;font-weight:600;letter-spacing:-.01em;margin:0 0 16px}
+p{margin:0 0 16px}
+.lede{font-size:19px;color:var(--fg-2);margin:0}
+
+.hero{padding-top:88px;padding-bottom:8px}
+.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.btn{display:inline-flex;align-items:center;height:42px;padding:0 18px;border-radius:6px;font-size:15px;font-weight:500;border:1px solid var(--line);color:var(--fg)}
+.btn:hover{text-decoration:none;border-color:var(--muted)}
+.btn-primary{background:var(--btn);border-color:var(--btn);color:#fff}
+.btn-primary:hover{background:var(--btn-hover);border-color:var(--btn-hover)}
+
+.shot{max-width:1040px;margin:48px auto 0;padding:0 24px}
+.shot img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:8px}
+@media (prefers-color-scheme:dark){.shot img{filter:brightness(.92)}}
+
+section{padding-top:80px}
+.pillars{list-style:none;padding:0;margin:0;display:grid;gap:28px}
+.pillars h3{font-size:18px;line-height:1.3;font-weight:600;letter-spacing:-.01em;margin:0 0 8px;color:var(--fg)}
+.pillars p{margin:0;color:var(--fg-2);font-size:16px;line-height:1.6}
+.features{list-style:none;padding:0;margin:0}
+.features li{margin:0 0 16px;color:var(--fg-2)}
+.features li:last-child{margin-bottom:0}
+.features strong{color:var(--fg);font-weight:600}
+
+code{font-family:var(--mono);font-size:.86em}
+.code{position:relative;margin:24px 0}
+pre{margin:0;padding:16px 18px;padding-right:76px;background:var(--code-bg);border-radius:6px;overflow-x:auto;font:14px/1.7 var(--mono);color:var(--fg)}
+pre code{font-size:inherit}
+.copy{position:absolute;top:10px;right:10px;height:28px;padding:0 10px;font:500 13px/1 var(--sans);color:var(--fg-2);background:var(--bg);border:1px solid var(--line);border-radius:5px;cursor:pointer}
+.copy:hover{color:var(--fg);border-color:var(--muted)}
+
+.deploy{display:flex;flex-wrap:wrap;gap:10px;margin:24px 0 20px}
+.deploy a{display:block;line-height:0}
+.deploy img{height:28px;width:auto}
+.note{color:var(--fg-2);margin:0}
+.clients{display:flex;flex-wrap:wrap;gap:4px;margin:24px 0 4px;border-bottom:1px solid var(--line)}
+.clients button{font:500 15px/1 var(--sans);color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;padding:10px 10px 12px;cursor:pointer}
+.clients button:hover{color:var(--fg)}
+.clients button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--fg)}
+.client{padding-top:8px}
+.client p{margin:16px 0 0}
+.client .code{margin:16px 0}
+.client + .note{margin-top:24px}
+
+footer{margin-top:112px;border-top:1px solid var(--line)}
+footer .wrap{padding-top:28px;padding-bottom:40px;font-size:15px;color:var(--muted)}
+footer a{color:var(--fg-2)}
+
+@media (max-width:600px){
+  body{font-size:16px}
+  .wrap,.shot{padding:0 20px}
+  header .wrap{height:64px}
+  .hero{padding-top:56px;padding-bottom:0}
+  h1{font-size:32px}
+  .lede{font-size:17px}
+  .shot{margin-top:32px}
+  section{padding-top:72px}
+  pre{font-size:13px;padding:46px 16px 16px}
+  .copy{top:8px;right:8px}
+  footer{margin-top:88px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Open CRM home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M11.5 7.5 L4.5 16 L11.5 24.5" fill="none" stroke="var(--mark-a)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.5 7.5 L27.5 16 L20.5 24.5" fill="none" stroke="var(--mark-b)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="16" cy="16" r="3.3" fill="var(--mark-c)"/></svg>
+      Open CRM
+    </a>
+    <nav>
+      <a href="https://github.com/housewithbricks/open-crm#readme">Docs</a>
+      <a href="https://github.com/housewithbricks/open-crm">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>Your server. Your data. Your agents.</h1>
+    <p class="lede">Most CRMs are cumbersome: per-seat pricing, a menu for everything, and a data model you have to bend your work around. Open CRM is a small, self-hosted CRM you can run as it is, or fork and build into exactly the CRM you want.</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="#self-host">Self-host it</a>
+      <a class="btn" href="https://github.com/housewithbricks/open-crm/fork">Fork on GitHub</a>
+    </div>
+  </div>
+
+  <div class="shot">
+    <img src="assets/app.png" alt="Open CRM deals board" width="1440" height="900">
+  </div>
+
+  <div class="wrap">
+    <section>
+      <ul class="pillars">
+        <li>
+          <h3>Simple</h3>
+          <p>One container and a Postgres database. People, companies, deals, tasks and a timeline, and nothing you didn't ask for. The codebase is small, readable TypeScript you can get your head around in an afternoon.</p>
+        </li>
+        <li>
+          <h3>Extensible</h3>
+          <p>Objects and fields are data, not code: add a field or a whole new object from the UI and every table, form and board picks it up. When that's not enough, fork it. There's a REST API, signed webhooks and CSV import/export for everything else.</p>
+        </li>
+        <li>
+          <h3>AI-native</h3>
+          <p>A built-in MCP server lets Claude, ChatGPT, Cursor and other agents work in the same records you do. They can even extend the CRM themselves. Every change is attributed and can be undone, and anything destructive waits for your approval.</p>
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Use it, or make it yours</h2>
+      <p>Run it as it is and shape it from the UI, or fork it and change anything. All business logic lives in one folder (<code>server/src/core</code>), the API and MCP server are thin layers on top of it, and the UI renders from the schema, so most changes are small and local. It's open source: no license keys, no telemetry, and your data stays in your own Postgres.</p>
+      <p style="margin-top:16px"><a href="https://github.com/housewithbricks/open-crm#layout">How the code is laid out →</a></p>
+    </section>
+
+    <section id="self-host">
+      <h2>Self-host</h2>
+      <p>Open CRM is one Docker container plus Postgres. Migrations run on boot, and the first boot creates People, Companies and Deals.</p>
+      <div class="code">
+<pre><code>git clone https://github.com/housewithbricks/open-crm
+cd open-crm
+cp .env.example .env    # set ADMIN_PASSWORD
+docker compose up -d</code></pre>
+      </div>
+      <div class="deploy">
+        <!-- Railway needs a published template: replace this href with your https://railway.com/deploy/<code> URL (see docs/self-hosting.md#railway). -->
+        <a href="https://github.com/housewithbricks/open-crm/blob/main/docs/self-hosting.md#railway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" width="128" height="28"></a>
+        <a href="https://render.com/deploy?repo=https://github.com/housewithbricks/open-crm"><img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" width="107" height="28"></a>
+        <a href="https://cloud.digitalocean.com/apps/new?repo=https://github.com/housewithbricks/open-crm/tree/main"><img src="https://www.deploytodo.com/do-btn-blue.svg" alt="Deploy to DigitalOcean" width="176" height="28"></a>
+        <a href="https://heroku.com/deploy?template=https://github.com/housewithbricks/open-crm"><img src="https://www.herokucdn.com/deploy/button.svg" alt="Deploy to Heroku" width="129" height="28"></a>
+      </div>
+      <p class="note">Or anywhere Docker runs: Fly.io, Coolify, Dokploy, Portainer, a VPS. See the <a href="https://github.com/housewithbricks/open-crm/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
+    </section>
+
+    <section>
+      <h2>Connect your agent</h2>
+      <p>Open CRM speaks MCP, so any MCP client can use it. Create a key in <em>Settings → API keys &amp; MCP</em>, then pick your client:</p>
+      <div class="clients" role="tablist" aria-label="MCP client">
+        <button role="tab" aria-selected="true" aria-controls="c-claude-code" id="t-claude-code">Claude Code</button>
+        <button role="tab" aria-selected="false" aria-controls="c-claude" id="t-claude">Claude</button>
+        <button role="tab" aria-selected="false" aria-controls="c-chatgpt" id="t-chatgpt">ChatGPT</button>
+        <button role="tab" aria-selected="false" aria-controls="c-cursor" id="t-cursor">Cursor</button>
+        <button role="tab" aria-selected="false" aria-controls="c-vscode" id="t-vscode">VS Code</button>
+        <button role="tab" aria-selected="false" aria-controls="c-other" id="t-other">Other</button>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-claude-code" aria-labelledby="t-claude-code">
+        <p>Run once in your terminal:</p>
+        <div class="code">
+<pre><code>claude mcp add --transport http open-crm https://your-host/mcp \
+  --header "Authorization: Bearer ocrm_…"</code></pre>
+        </div>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-claude" aria-labelledby="t-claude">
+        <p>In Claude on the web or desktop: <em>Settings → Connectors → Add custom connector</em>. Connectors take a URL rather than headers, so the key goes in the URL:</p>
+        <div class="code">
+<pre><code>https://your-host/mcp?key=ocrm_…</code></pre>
+        </div>
+        <p class="note">Treat this URL like a password, and give each connector its own key.</p>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-chatgpt" aria-labelledby="t-chatgpt">
+        <p>In ChatGPT, turn on developer mode (<em>Settings → Apps &amp; Connectors → Advanced settings</em>), then create a connector with this URL and <em>No authentication</em>. The key in the URL is the authentication.</p>
+        <div class="code">
+<pre><code>https://your-host/mcp?key=ocrm_…</code></pre>
+        </div>
+        <p class="note">On the OpenAI API, add an <code>mcp</code> tool with <code>server_url</code> and an <code>Authorization</code> header instead.</p>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-cursor" aria-labelledby="t-cursor">
+        <p>Add to <code>~/.cursor/mcp.json</code>:</p>
+        <div class="code">
+<pre><code>{
+  "mcpServers": {
+    "open-crm": {
+      "url": "https://your-host/mcp",
+      "headers": { "Authorization": "Bearer ocrm_…" }
+    }
+  }
+}</code></pre>
+        </div>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-vscode" aria-labelledby="t-vscode">
+        <p>Add to <code>.vscode/mcp.json</code> for GitHub Copilot agent mode:</p>
+        <div class="code">
+<pre><code>{
+  "servers": {
+    "open-crm": {
+      "type": "http",
+      "url": "https://your-host/mcp",
+      "headers": { "Authorization": "Bearer ocrm_…" }
+    }
+  }
+}</code></pre>
+        </div>
+      </div>
+
+      <div class="client" role="tabpanel" id="c-other" aria-labelledby="t-other">
+        <p>Point any MCP client at the Streamable HTTP endpoint with the key as a bearer token:</p>
+        <div class="code">
+<pre><code>URL     https://your-host/mcp
+Header  Authorization: Bearer ocrm_…</code></pre>
+        </div>
+        <p>If the client only takes a URL, use <code>/mcp?key=ocrm_…</code>. If it only runs local servers, bridge with <code>mcp-remote</code>:</p>
+        <div class="code">
+<pre><code>npx -y mcp-remote https://your-host/mcp --header "Authorization:Bearer ocrm_…"</code></pre>
+        </div>
+      </div>
+
+      <p class="note">Setup for Windsurf, Gemini CLI, Codex, Claude Desktop config files and the OpenAI API is in the <a href="https://github.com/housewithbricks/open-crm/blob/main/docs/connecting-agents.md">guide to connecting agents</a>.</p>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">Open CRM · open source · <a href="https://github.com/housewithbricks/open-crm">GitHub</a></div>
+</footer>
+
+<script>
+document.querySelectorAll('.code').forEach(function (box) {
+  var btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'copy'; btn.textContent = 'Copy';
+  btn.addEventListener('click', function () {
+    var text = box.querySelector('code').innerText.replace(/[ \t]+#.*$/gm, '');
+    navigator.clipboard.writeText(text).then(function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+  box.appendChild(btn);
+});
+
+// Client tabs. Without JS every panel stays visible.
+(function () {
+  var tabs = document.querySelectorAll('.clients [role=tab]');
+  function show(tab) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute('aria-selected', on);
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { show(t); });
+    t.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (d) { var n = tabs[(i + d + tabs.length) % tabs.length]; show(n); n.focus(); }
+    });
+  });
+  if (tabs.length) show(tabs[0]);
+})();
+</script>
+</body>
+</html>

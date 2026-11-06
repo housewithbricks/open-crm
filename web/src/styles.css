@@ -1,0 +1,164 @@
+/* Only scan the web app's own source for classes, so the client and server builds generate the same CSS. */
+@import "tailwindcss" source(".");
+
+/* Dark mode follows the data-theme attribute set from Settings → Appearance (or the OS). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ------------------------------------------------------------------------------
+   Design tokens. They live in CSS variables so the theme and the user's accent
+   color can change at runtime; @theme inline exposes them as Tailwind colors
+   (bg-panel, text-muted, border-line, bg-accent, …).
+   ------------------------------------------------------------------------------ */
+:root {
+  --font: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  --bg: #ffffff;
+  --sidebar: #fafafa;
+  --panel: #ffffff;
+  --ink: #171717;
+  --ink-2: #404040;
+  --muted: #737373;
+  --faint: #a3a3a3;
+  --line: #ebebeb;
+  --line-2: #e0e0e0;
+  --hover: #f5f5f5;
+  --active: #efefef;
+
+  /* --accent-base is the user's accent (Settings → Appearance); the rest derive from it. */
+  --accent-base: #4f46e5;
+  --accent: var(--accent-base);
+  --accent-ink: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent-base) 11%, var(--bg));
+  --agent: #0f766e;
+  --warn: #a16207;
+  --warn-soft: #fefce8;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --mark-a: #4f46e5;
+  --mark-b: #0d9488;
+  --mark-c: #171717;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.08);
+
+  /* Palette for objects, options and tags. Names stay stable; values follow the theme. */
+  --d-gray: #a3a3a3;
+  --d-blue: #3b82f6;
+  --d-violet: #8b5cf6;
+  --d-amber: #f59e0b;
+  --d-orange: #f97316;
+  --d-green: #22c55e;
+  --d-red: #ef4444;
+  --d-teal: #14b8a6;
+  --d-pink: #ec4899;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f0f0f;
+  --sidebar: #141414;
+  --panel: #171717;
+  --ink: #ededed;
+  --ink-2: #c7c7c7;
+  --muted: #8f8f8f;
+  --faint: #5c5c5c;
+  --line: #262626;
+  --line-2: #303030;
+  --hover: #1f1f1f;
+  --active: #262626;
+  --accent: color-mix(in srgb, var(--accent-base) 70%, #ffffff);
+  --accent-ink: #0f0f0f;
+  --accent-soft: color-mix(in srgb, var(--accent-base) 22%, var(--bg));
+  --agent: #2dd4bf;
+  --warn: #facc15;
+  --warn-soft: #29240f;
+  --danger: #f87171;
+  --danger-soft: #2a1515;
+  --mark-a: #a5b4fc;
+  --mark-b: #2dd4bf;
+  --mark-c: #ededed;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-panel: var(--panel);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-agent: var(--agent);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --shadow-pop: var(--shadow);
+  --radius-ctl: 6px;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-ink antialiased;
+    font: 13px/1.5 var(--font);
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-semibold tracking-[-0.01em];
+  }
+  code {
+    @apply rounded bg-hover px-1 py-px font-mono text-[12px];
+  }
+  pre {
+    @apply my-1.5 overflow-x-auto rounded-ctl bg-hover px-3 py-2.5 font-mono text-[12px] leading-relaxed whitespace-pre;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  /* Round, accent-filled checkboxes everywhere ("square" for form-style ones). */
+  input[type="checkbox"] {
+    @apply grid size-4 flex-none cursor-pointer appearance-none place-items-center rounded-full border-[1.5px] border-line-2 bg-panel transition-colors;
+  }
+  input[type="checkbox"]:hover {
+    @apply border-accent;
+  }
+  input[type="checkbox"]:checked {
+    @apply border-accent bg-accent;
+  }
+  input[type="checkbox"]:checked::after {
+    content: "";
+    @apply h-2 w-1 -translate-y-px rotate-45 border-r-2 border-b-2 border-white;
+  }
+  input[type="checkbox"].square {
+    @apply rounded;
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+@utility animate-menu {
+  animation: menu-in 0.08s ease-out;
+}

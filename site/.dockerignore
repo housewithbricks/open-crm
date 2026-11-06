@@ -1,0 +1,6 @@
+screenshots/
+Dockerfile
+.dockerignore
+README.md
+*.md
+.DS_Store

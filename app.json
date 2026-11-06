@@ -1,0 +1,14 @@
+{
+  "name": "Open CRM",
+  "description": "Self-hosted CRM with a built-in MCP server for AI agents.",
+  "repository": "https://github.com/housewithbricks/open-crm",
+  "keywords": ["crm", "mcp", "self-hosted", "postgres", "ai-agents"],
+  "stack": "container",
+  "addons": [{ "plan": "heroku-postgresql:essential-0" }],
+  "env": {
+    "ADMIN_PASSWORD": { "description": "Password for the web UI.", "required": true },
+    "SESSION_SECRET": { "description": "Signs login sessions.", "generator": "secret" },
+    "DATABASE_SSL": { "description": "Heroku Postgres requires TLS.", "value": "require" }
+  },
+  "formation": { "web": { "quantity": 1, "size": "basic" } }
+}

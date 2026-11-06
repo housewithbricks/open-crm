@@ -1,0 +1,58 @@
+# Open CRM with the prebuilt image. No clone or build needed:
+#
+#   mkdir open-crm && cd open-crm
+#   curl -fsSLO https://raw.githubusercontent.com/housewithbricks/open-crm/main/deploy/docker-compose.yml
+#   echo "ADMIN_PASSWORD=$(openssl rand -base64 18)" > .env && cat .env
+#   docker compose up -d                      # http://localhost:8080
+#
+# For HTTPS on your own domain, also download deploy/Caddyfile, add DOMAIN=crm.example.com to .env
+# and run: docker compose --profile https up -d
+
+services:
+  app:
+    image: ${OPENCRM_IMAGE:-ghcr.io/housewithbricks/open-crm:latest}
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://opencrm:${POSTGRES_PASSWORD:-opencrm}@db:5432/opencrm
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: opencrm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencrm}
+      POSTGRES_DB: opencrm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencrm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["https"]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost} # set DOMAIN in .env to your real domain
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:

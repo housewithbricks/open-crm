@@ -1,0 +1,5 @@
+# Automatic HTTPS in front of Open CRM. Point $DOMAIN's DNS at this server first.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8080
+}

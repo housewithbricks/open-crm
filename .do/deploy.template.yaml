@@ -1,0 +1,25 @@
+# DigitalOcean App Platform "Deploy to DO" button template.
+# One click: https://cloud.digitalocean.com/apps/new?repo=https://github.com/housewithbricks/open-crm/tree/main
+# No ADMIN_PASSWORD is set here: on first boot the app generates one and prints it to the runtime logs.
+# To choose your own, add ADMIN_PASSWORD as an encrypted env var on the web component.
+spec:
+  name: open-crm
+  services:
+    - name: web
+      git:
+        repo_clone_url: https://github.com/housewithbricks/open-crm.git
+        branch: main
+      dockerfile_path: Dockerfile
+      http_port: 8080
+      instance_count: 1
+      instance_size_slug: basic-xxs
+      health_check:
+        http_path: /health
+      envs:
+        - key: DATABASE_URL
+          scope: RUN_TIME
+          value: ${db.DATABASE_URL}
+  databases:
+    - name: db
+      engine: PG
+      production: false

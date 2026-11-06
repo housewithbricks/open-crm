@@ -1,0 +1,68 @@
+# Open CRM: build from source and run with Postgres.
+#
+#   cp .env.example .env      # set ADMIN_PASSWORD
+#   docker compose up -d      # app on http://localhost:8080
+#
+# Optional profiles:
+#   docker compose --profile https up -d   # + Caddy with automatic HTTPS for $DOMAIN
+#   docker compose --profile site up -d    # + the static landing page on :8081
+#
+# Prefer a prebuilt image instead of building? Use deploy/docker-compose.yml.
+
+services:
+  app:
+    build: .
+    image: open-crm:local
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://opencrm:${POSTGRES_PASSWORD:-opencrm}@db:5432/opencrm
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: opencrm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencrm}
+      POSTGRES_DB: opencrm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencrm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["https"]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost} # set DOMAIN in .env to your real domain
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  site:
+    profiles: ["site"]
+    build: ./site
+    image: open-crm-site:local
+    ports:
+      - "${SITE_PORT:-8081}:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
