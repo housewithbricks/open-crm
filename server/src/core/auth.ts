@@ -91,7 +91,8 @@ export async function signOutEverywhere() {
 const VALID_SCOPES: Scope[] = ["read", "write", "schema"];
 
 export async function createApiKey(name: string, scopes: Scope[]) {
-  if (!name.trim()) throw new CrmError("Key needs a name");
+  if (typeof name !== "string" || !name.trim()) throw new CrmError("Key needs a name");
+  if (!Array.isArray(scopes)) throw new CrmError("scopes must be a list");
   const s = scopes.filter((x) => VALID_SCOPES.includes(x));
   if (!s.length) throw new CrmError("Pick at least one scope");
   const key = `ocrm_${randomBytes(24).toString("base64url")}`;

@@ -1,6 +1,6 @@
 import { json, sql } from "../db.js";
 import { audit } from "./audit.js";
-import { FILTER_HELP, FILTER_OPS, listRecords, META_FILTER_FIELDS, writeReply, type Filter } from "./records.js";
+import { checkFilters, FILTER_HELP, FILTER_OPS, listRecords, META_FILTER_FIELDS, writeReply, type Filter } from "./records.js";
 import { getField, getObject } from "./schema.js";
 import { CrmError, notFound, requireScope, type Actor } from "./types.js";
 
@@ -23,8 +23,9 @@ async function cleanConfig(slug: string, c: ViewConfig = {}): Promise<ViewConfig
     out.kind = c.kind;
   }
   if (c.q) out.q = String(c.q);
-  if (c.filters?.length) {
-    out.filters = c.filters.map((f) => {
+  const filters = checkFilters(c.filters);
+  if (filters?.length) {
+    out.filters = filters.map((f) => {
       if (!(META_FILTER_FIELDS as readonly string[]).includes(f.field)) getField(obj, f.field);
       if (!FILTER_OPS.includes(f.op)) throw new CrmError(`Unknown filter op "${f.op}". ${FILTER_HELP}`);
       return { field: f.field, op: f.op, ...(f.value !== undefined ? { value: f.value } : {}) };
@@ -53,7 +54,7 @@ export async function listViews(slug: string) {
 
 export async function createView(actor: Actor, slug: string, input: { name: string; config?: ViewConfig }) {
   requireScope(actor, "write");
-  if (!input.name?.trim()) throw new CrmError("View needs a name");
+  if (typeof input.name !== "string" || !input.name.trim()) throw new CrmError("View needs a name");
   const obj = await getObject(slug);
   const config = await cleanConfig(slug, input.config);
   const [row] = await sql<SavedView[]>`insert into views (object_type_id, name, config, created_by)
@@ -65,6 +66,7 @@ export async function createView(actor: Actor, slug: string, input: { name: stri
 
 export async function updateView(actor: Actor, id: string, patch: { name?: string; config?: ViewConfig }) {
   requireScope(actor, "write");
+  if (patch.name !== undefined && typeof patch.name !== "string") throw new CrmError("name must be a string");
   const [cur] = await sql`select v.*, o.slug from views v join object_types o on o.id = v.object_type_id where v.id = ${id}`;
   if (!cur) throw notFound("View");
   const config = patch.config ? await cleanConfig(cur.slug, patch.config) : cur.config;

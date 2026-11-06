@@ -993,3 +993,127 @@ describe("login limiter", () => {
     assert.equal(await asCookie(cookie), 200, "existing sessions keep working");
   });
 });
+
+describe("round 4 fixes", () => {
+  it("refuses impossible task due dates and pages the task list", async () => {
+    const bad = await rest("/activities", { body: { kind: "task", title: "Leap", due_at: "2026-02-30" } });
+    assert.equal(bad.status, 400);
+    for (let i = 0; i < 3; i++) await rest("/activities", { body: { kind: "task", title: `Paged ${i}`, due_at: "2026-03-01" } });
+    const page = await rest("/tasks?limit=2");
+    assert.equal(page.data.length, 2);
+    assert.equal((await rest("/tasks?limit=abc")).status, 400);
+  });
+
+  it("1: HEAD needs the read scope like GET", async () => {
+    const w = (await rest("/keys", { body: { name: "HeadWriter", scopes: ["write"] } })).data.key;
+    const id = (await rest("/objects/companies/records", { body: { name: "Head Co" } })).data.id;
+    const head = (path: string) => fetch(BASE + "/api" + path, { method: "HEAD", headers: { authorization: `Bearer ${w}` } });
+    assert.equal((await head(`/records/${id}`)).status, 403);
+    assert.equal((await head("/records/00000000-0000-4000-8000-000000000000")).status, 403, "no existence oracle");
+    assert.equal((await head("/objects/companies/export.csv")).status, 403);
+    assert.equal((await head("/me")).status, 200);
+  });
+
+  it("2: a plural label can't shadow another object's slug", async () => {
+    for (const label_plural of ["Deals", "deals", "people"]) {
+      const r = await rest("/objects/companies", { method: "PATCH", body: { label_plural } });
+      assert.equal(r.status, 409, label_plural);
+    }
+    assert.equal((await rest("/objects", { body: { slug: "widgets", label: "Widget", label_plural: "Companies" } })).status, 409);
+    assert.equal((await rest("/objects", { body: { slug: "gadgets", label: "Gadget", label_plural: "DEALS" } })).status, 409);
+    assert.equal((await rest("/objects/companies", { method: "PATCH", body: { label_plural: "Companies" } })).status, 200, "its own name is fine");
+    // An existing clash (from before this check) still routes by slug first.
+    await db`update object_types set label_plural = 'Deals' where slug = 'companies'`;
+    await rest("/objects/people", { method: "PATCH", body: { description: "People" } }); // drops the schema cache
+    try {
+      assert.equal((await rest("/objects/deals/records?limit=1")).data.object, "deals");
+    } finally {
+      await db`update object_types set label_plural = 'Companies' where slug = 'companies'`;
+      await rest("/objects/people", { method: "PATCH", body: { description: "" } });
+    }
+  });
+
+  it("3: duplicate errors don't reveal the existing record to write-only keys", async () => {
+    const w = (await rest("/keys", { body: { name: "DupWriter", scopes: ["write"] } })).data.key;
+    const secret = await rest("/objects/people/records", { body: { name: "Secret Sam", email: "sam@dup.test" } });
+    const leaks = (msg: string) => msg.includes("Secret Sam") || msg.includes(secret.data.id);
+    const create = await rest("/objects/people/records", { body: { name: "X", email: "sam@dup.test" }, bearer: w });
+    assert.equal(create.status, 409);
+    assert.equal(create.data.error, "A Person with this email already exists");
+    const mine = await rest("/objects/people/records", { body: { name: "Mine", email: "mine@dup.test" }, bearer: w });
+    const update = await rest(`/records/${mine.data.id}`, { method: "PATCH", body: { email: "sam@dup.test" }, bearer: w });
+    assert.equal(update.status, 409);
+    assert.ok(!leaks(update.data.error), update.data.error);
+    const imp = await rest("/objects/people/import", { body: { rows: [{ name: "Y", email: "sam@dup.test" }] }, bearer: w });
+    assert.equal(imp.data.failed, 1);
+    assert.ok(!leaks(imp.data.errors[0].error), imp.data.errors[0].error);
+    await rest(`/records/${mine.data.id}`, { method: "DELETE", bearer: w });
+    await rest(`/records/${secret.data.id}`, { method: "PATCH", body: { email: "mine@dup.test" } });
+    const restore = await rest(`/records/${mine.data.id}/restore`, { body: {}, bearer: w });
+    assert.equal(restore.status, 409);
+    assert.ok(!leaks(restore.data.error), restore.data.error);
+    const full = await rest("/objects/people/records", { body: { name: "Z", email: "mine@dup.test" } });
+    assert.match(full.data.error, /Secret Sam/, "the signed-in user still sees which record");
+  });
+
+  it("5: a REST type change by a key reports the queued request and audits nothing empty", async () => {
+    await rest("/objects/people/fields", { body: { key: "rank", label: "Rank", type: "number" }, bearer: key });
+    const r = await rest("/objects/people/fields/rank", { method: "PATCH", body: { type: "text" }, bearer: key });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.field.type, "number");
+    assert.equal(r.data.change_requests.length, 1);
+    assert.equal(r.data.change_requests[0].status, "pending");
+    const same = await rest("/objects/people/fields/rank", { method: "PATCH", body: { label: "Rank" }, bearer: key });
+    assert.equal(same.data.label, "Rank");
+    const audit = (await rest("/audit?limit=50")).data.filter((a: any) => a.action === "field.update" && a.entity_id === r.data.field.id);
+    assert.equal(audit.length, 0, "no empty field.update entries");
+    const relabel = await rest("/objects/people/fields/rank", { method: "PATCH", body: { label: "Ranking" } });
+    assert.equal(relabel.data.label, "Ranking");
+  });
+
+  it("6: malformed input is a 400, not a 500", async () => {
+    for (const filters of ["{}", "[null]", "[1]", '"x"', "[[]]"]) {
+      const r = await rest(`/objects/people/records?filters=${encodeURIComponent(filters)}`);
+      assert.equal(r.status, 400, filters);
+      assert.equal((await rest(`/objects/deals/groups?field=stage&filters=${encodeURIComponent(filters)}`)).status, 400, filters);
+      assert.equal((await rest("/objects/people/views", { body: { name: "Bad", config: { filters: JSON.parse(filters) } } })).status, 400, filters);
+    }
+    const nope = [
+      ["/changes/not-a-uuid/reject", "POST"],
+      ["/keys/not-a-uuid", "DELETE"],
+      ["/webhooks/nope", "PATCH"],
+      ["/webhooks/nope", "DELETE"],
+      ["/webhooks/nope/test", "POST"],
+      ["/views/nope", "PATCH"],
+      ["/views/nope", "DELETE"],
+      ["/activities/nope", "PATCH"],
+      ["/activities/nope", "DELETE"],
+      ["/audit/nope/undo", "POST"],
+      ["/records/nope/timeline", "GET"],
+      ["/tasks?record_id=nope", "GET"],
+    ];
+    for (const [path, method] of nope) {
+      const r = await rest(path, { method, body: method === "GET" ? undefined : {} });
+      assert.ok(r.status >= 400 && r.status < 500, `${method} ${path} → ${r.status}`);
+    }
+    const raw = (path: string, body: string, method = "POST") =>
+      fetch(BASE + "/api" + path, { method, headers: { cookie, "content-type": "application/json" }, body }).then((r) => r.status);
+    for (const body of ["null", "[]", '"x"', "1"]) {
+      for (const path of ["/objects", "/objects/companies/records", "/activities", "/keys", "/webhooks"]) assert.equal(await raw(path, body), 400, `${path} ${body}`);
+      assert.equal(await raw("/objects/companies", body, "PATCH"), 400, body);
+    }
+    for (const [path, body] of [
+      ["/objects", {}],
+      ["/objects", { label: 1 }],
+      ["/objects", { label: "Q", fields: [null] }],
+      ["/objects/companies/fields", { label: 1, type: "text" }],
+      ["/objects/companies/fields", { label: "F", type: "select", choices: [null] }],
+      ["/objects/companies/fields", { label: "G", type: "relation", target: 1 }],
+      ["/objects/companies/views", { name: 1 }],
+      ["/keys", { name: "n", scopes: "read" }],
+      ["/webhooks", { url: "https://example.com", events: "x" }],
+    ] as const) {
+      assert.equal((await rest(path, { body })).status, 400, `${path} ${JSON.stringify(body)}`);
+    }
+  });
+});

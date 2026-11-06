@@ -1,6 +1,6 @@
 import { sql, type Db } from "../db.js";
 import { audit, transaction } from "./audit.js";
-import { UUID_RE } from "./fields.js";
+import { toDay, UUID_RE } from "./fields.js";
 import { writeReply } from "./records.js";
 import { CrmError, notFound, requireScope, type Actor } from "./types.js";
 
@@ -24,6 +24,7 @@ export type Activity = {
 /** Date-only input ("2026-11-09") is stored at noon UTC so it shows the same day in every timezone. */
 function parseDue(v: string | null | undefined) {
   if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v) && toDay(v) !== v) throw new CrmError(`due_at: ${v} is not a real date`);
   const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T12:00:00Z` : v);
   if (Number.isNaN(d.getTime())) throw new CrmError("due_at is not a valid date (use YYYY-MM-DD)");
   return d;

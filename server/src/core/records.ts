@@ -173,7 +173,17 @@ const toOut = (obj: ObjectType, r: any): CrmRecord => ({
   updated_at: r.updated_at,
 });
 
+/** Filters from outside (query string, saved views) must be a list of {field, op, value} objects. */
+export function checkFilters(filters: unknown): Filter[] | undefined {
+  if (filters === undefined || filters === null) return undefined;
+  if (!Array.isArray(filters) || filters.some((f) => !f || typeof f !== "object" || Array.isArray(f) || typeof f.field !== "string")) {
+    throw new CrmError(`filters must be a list of {field, op, value} objects. ${FILTER_HELP}`);
+  }
+  return filters;
+}
+
 function whereFor(obj: ObjectType, p: ListParams) {
+  checkFilters(p.filters);
   const conds = [
     sql`object_type_id = ${obj.id}`,
     sql`deleted_at is null`,
@@ -288,7 +298,7 @@ async function lockUnique(db: Db, obj: ObjectType, data: Record<string, unknown>
 }
 
 /** Unique values and relation targets. Call after lockUnique, in the same transaction. */
-async function checkIntegrity(db: Db, obj: ObjectType, data: Record<string, unknown>, selfId?: string, opts = { relations: true }) {
+async function checkIntegrity(db: Db, actor: Actor, obj: ObjectType, data: Record<string, unknown>, selfId?: string, opts = { relations: true }) {
   for (const f of obj.fields) {
     const v = data[f.key];
     if (v === null || v === undefined) continue;
@@ -296,6 +306,8 @@ async function checkIntegrity(db: Db, obj: ObjectType, data: Record<string, unkn
       const dup = await db`select id, display_name from records where object_type_id = ${obj.id} and deleted_at is null
         and lower(data->>${f.key}) = lower(${String(v)}) ${selfId ? db`and id <> ${selfId}` : db``} limit 1`;
       if (dup.length) {
+        // Only a key that may read records learns which one it collided with.
+        if (!actor.scopes.includes("read")) throw new CrmError(`A ${obj.label} with this ${f.key} already exists`, 409);
         throw new CrmError(`A ${obj.label} with ${f.key} "${v}" already exists (${dup[0].display_name}, id ${dup[0].id}). Use update or upsert.`, 409);
       }
     }
@@ -316,7 +328,7 @@ const stripNulls = (d: Record<string, unknown>) =>
 export async function insertRecord(db: Db, actor: Actor, obj: ObjectType, input: Record<string, unknown>) {
   const data = stripNulls(validateData(obj, input ?? {}, "create"));
   await lockUnique(db, obj, data);
-  await checkIntegrity(db, obj, data);
+  await checkIntegrity(db, actor, obj, data);
   const [row] = await db`insert into records (object_type_id, data, display_name, created_by, updated_by)
     values (${obj.id}, ${json(data)}::jsonb, ${displayName(obj, data)}, ${actor.name}, ${actor.name}) returning *`;
   await audit(db, actor, "record.create", obj.slug, row.id, null, data);
@@ -341,7 +353,7 @@ async function patchRecord(db: Db, actor: Actor, id: string, patch: Record<strin
   if (!changedKeys.length) return rec;
   const changed = Object.fromEntries(changedKeys.map((k) => [k, clean[k]]));
   await lockUnique(db, obj, changed);
-  await checkIntegrity(db, obj, changed, id);
+  await checkIntegrity(db, actor, obj, changed, id);
   const [row] = await db`update records set data = ${json(next)}::jsonb, display_name = ${displayName(obj, next)},
     updated_by = ${actor.name}, updated_at = now() where id = ${id} returning *`;
   const before = Object.fromEntries(changedKeys.map((k) => [k, rec.data[k] ?? null]));
@@ -418,7 +430,7 @@ export async function restoreRecord(actor: Actor, id: string) {
     const obj = await getObject(row.slug);
     await lockUnique(tx, obj, row.data);
     // Relations may point at records archived since; that's fine on restore, so check uniqueness only.
-    await checkIntegrity(tx, obj, row.data, id, { relations: false });
+    await checkIntegrity(tx, actor, obj, row.data, id, { relations: false });
     await tx`update records set deleted_at = null, updated_by = ${actor.name} where id = ${id}`;
     await audit(tx, actor, "record.restore", obj.slug, id, null, null);
   });

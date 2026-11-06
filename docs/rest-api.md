@@ -17,7 +17,7 @@ An API key has one or more scopes:
 
 | Scope | Allows |
 |---|---|
-| `read` | Every `GET` route: records, search, schema, views, tasks, timeline, CSV export, dashboard, audit log, approvals list. `GET /api/me` works without it. |
+| `read` | Every `GET` (and `HEAD`) route: records, search, schema, views, tasks, timeline, CSV export, dashboard, audit log, approvals list. `GET /api/me` works without it. |
 | `write` | Create, update, archive and restore records; notes and tasks; saved views; CSV import. |
 | `schema` | Create and edit objects and fields. Destructive changes (archive a field or object, change a field's type, remove options) become change requests that wait for approval. |
 
@@ -74,10 +74,10 @@ Filters are ANDed, each `{"field", "op", "value"}`. Ops: `eq`, `neq`, `contains`
 |---|---|---|
 | `GET /api/schema` | read | All objects with their fields, and record counts. |
 | `POST /api/objects` | schema | Create an object: `{label, label_plural?, description?, color?, fields?: […]}`. |
-| `PATCH /api/objects/:slug` | schema | Rename, describe, recolor or change the primary field. |
+| `PATCH /api/objects/:slug` | schema | Rename, describe, recolor or change the primary field. A plural label can't be another object's slug or plural label (409). |
 | `DELETE /api/objects/:slug` | schema | Archive the object (a change request for API keys). |
 | `POST /api/objects/:slug/fields` | schema | Add a field: `{label, type, key?, description?, required?, unique?, choices?, target?, multiple?, currency?}`. |
-| `PATCH /api/objects/:slug/fields/:key` | schema | Edit label, description, required or options (`add_choices`, or `choices` for the full list). `type` or `remove_choices` are destructive (change requests for API keys). |
+| `PATCH /api/objects/:slug/fields/:key` | schema | Edit label, description, required or options (`add_choices`, or `choices` for the full list). `type` or `remove_choices` are destructive: for an API key they become change requests, and the reply is `{ field, change_requests }` with the field still unchanged. Otherwise the reply is the field. |
 | `DELETE /api/objects/:slug/fields/:key` | schema | Archive the field (a change request for API keys). |
 
 Field types: `text`, `long_text`, `number`, `currency`, `date`, `boolean`, `select`, `multi_select`, `email`, `url`, `phone`, `relation`.

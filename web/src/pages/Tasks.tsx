@@ -102,7 +102,8 @@ export function NewTask() {
 
 export default function Tasks() {
   const [all, setAll] = useState<"open" | "all">("open");
-  const { data } = useQuery({ queryKey: ["tasks", all], queryFn: () => api<Task[]>(`/tasks${all === "all" ? "?all=1" : ""}`) });
+  const [limit, setLimit] = useState(200);
+  const { data } = useQuery({ queryKey: ["tasks", all, limit], queryFn: () => api<Task[]>(`/tasks?limit=${limit}${all === "all" ? "&all=1" : ""}`), placeholderData: (prev) => prev });
   return (
     <div className="max-w-[760px]">
       <PageHead title="Tasks">
@@ -110,6 +111,12 @@ export default function Tasks() {
       </PageHead>
       <div className="mb-4"><NewTask /></div>
       {data && <TaskList tasks={data} empty={all === "all" ? "No tasks yet." : "No open tasks."} />}
+      {data && data.length >= limit && limit < 1000 && (
+        <p className="mt-3 text-xs text-muted">
+          Showing the first {data.length}.{" "}
+          <button type="button" className="text-accent hover:underline" onClick={() => setLimit((n) => Math.min(n + 200, 1000))}>Show more</button>
+        </p>
+      )}
     </div>
   );
 }

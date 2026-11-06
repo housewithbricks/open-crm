@@ -114,7 +114,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <main className="h-full min-w-0 overflow-auto">
         <div className="max-w-[1280px] px-7 pt-5 pb-12 max-md:p-4">{children}</div>
       </main>
-      {search.r && <RecordDrawer id={search.r} onClose={() => openRecord(null)} />}
+      {search.r && <RecordDrawer key={search.r} id={search.r} onClose={() => openRecord(null)} />}
       {cmdk && <CommandK onClose={() => setCmdk(false)} />}
       {newObj && <NewObjectModal onClose={() => setNewObj(false)} />}
     </div>

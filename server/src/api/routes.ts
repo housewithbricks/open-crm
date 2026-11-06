@@ -17,7 +17,7 @@ import {
   writeReply,
   type Filter,
 } from "../core/records.js";
-import { addField, createObjectType, loadSchema, updateField, updateObjectType } from "../core/schema.js";
+import { addField, createObjectType, getField, getObject, loadSchema, updateField, updateObjectType, type DestructiveChange } from "../core/schema.js";
 import { CrmError, requireScope, userActor, type Actor } from "../core/types.js";
 import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
@@ -113,6 +113,15 @@ api.post("/logout", (c) => {
   return c.json({ ok: true });
 });
 
+/** The JSON request body, which must be an object. */
+async function jsonBody(c: { req: { json: () => Promise<any> } }) {
+  const b = await c.req.json();
+  if (!b || typeof b !== "object" || Array.isArray(b)) throw new CrmError("The request body must be a JSON object");
+  return b;
+}
+
+const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+
 // Everything below needs a session cookie or an API key (Bearer).
 api.use("*", async (c, next) => {
   if (await verifySession(getCookie(c, COOKIE))) {
@@ -124,7 +133,8 @@ api.use("*", async (c, next) => {
   if (!agent) throw new CrmError("Not signed in", 401);
   c.set("actor", agent);
   // Reading CRM data (records, search, export, audit, dashboard…) needs the read scope.
-  if (c.req.method === "GET" && !/\/me$/.test(c.req.path)) requireScope(agent, "read");
+  // Anything that isn't a write counts as a read: Hono runs GET handlers for HEAD too.
+  if (!WRITE_METHODS.has(c.req.method) && !/\/me$/.test(c.req.path)) requireScope(agent, "read");
   return next();
 });
 
@@ -136,7 +146,7 @@ api.get("/dashboard", async (c) => c.json(await dashboard()));
 api.get("/settings", async (c) => c.json(await getUiSettings()));
 api.patch("/settings", async (c) => {
   userOnly(c);
-  return c.json(await updateUiSettings(await c.req.json()));
+  return c.json(await updateUiSettings(await jsonBody(c)));
 });
 api.post("/logout-all", async (c) => {
   userOnly(c);
@@ -149,19 +159,29 @@ api.get("/me", (c) => c.json({ actor: c.get("actor"), mcp_url: `${config.publicU
 /* --------------------------------- schema ---------------------------------- */
 
 api.get("/schema", async (c) => c.json({ objects: await loadSchema(), counts: await counts() }));
-api.post("/objects", async (c) => c.json(await createObjectType(c.get("actor"), await c.req.json())));
-api.patch("/objects/:slug", async (c) => c.json(await updateObjectType(c.get("actor"), c.req.param("slug"), await c.req.json())));
+api.post("/objects", async (c) => c.json(await createObjectType(c.get("actor"), await jsonBody(c))));
+api.patch("/objects/:slug", async (c) => c.json(await updateObjectType(c.get("actor"), c.req.param("slug"), await jsonBody(c))));
 api.delete("/objects/:slug", async (c) =>
   c.json(await requestOrApply(c.get("actor"), { kind: "archive_object", object: c.req.param("slug") })),
 );
-api.post("/objects/:slug/fields", async (c) => c.json(await addField(c.get("actor"), c.req.param("slug"), await c.req.json())));
+api.post("/objects/:slug/fields", async (c) => c.json(await addField(c.get("actor"), c.req.param("slug"), await jsonBody(c))));
+// Type changes and choice removals are destructive: an API key's are queued for approval and
+// returned as change_requests next to the (still unchanged) field.
 api.patch("/objects/:slug/fields/:key", async (c) => {
-  const { type, remove_choices, ...patch } = await c.req.json();
+  const actor = c.get("actor");
+  requireScope(actor, "schema");
+  const { type, remove_choices, ...patch } = await jsonBody(c);
   const [slug, key] = [c.req.param("slug"), c.req.param("key")];
-  if (type) await requestOrApply(c.get("actor"), { kind: "change_field_type", object: slug, field: key, type });
-  if (remove_choices?.length)
-    await requestOrApply(c.get("actor"), { kind: "remove_choices", object: slug, field: key, values: remove_choices });
-  return c.json(await updateField(c.get("actor"), slug, key, patch));
+  const destructive: DestructiveChange[] = [];
+  if (type) destructive.push({ kind: "change_field_type", object: slug, field: key, type });
+  if (remove_choices?.length) destructive.push({ kind: "remove_choices", object: slug, field: key, values: remove_choices });
+  const queued = [];
+  for (const change of destructive) {
+    const r = await requestOrApply(actor, change);
+    if (!r.applied) queued.push(r.change_request);
+  }
+  const field = Object.keys(patch).length ? await updateField(actor, slug, key, patch) : getField(await getObject(slug), key);
+  return c.json(queued.length ? { field, change_requests: queued } : field);
 });
 api.delete("/objects/:slug/fields/:key", async (c) =>
   c.json(await requestOrApply(c.get("actor"), { kind: "archive_field", object: c.req.param("slug"), field: c.req.param("key") })),
@@ -204,12 +224,12 @@ api.get("/objects/:slug/groups", async (c) => {
 });
 // Writes by a key without the read scope return only {id, action} (see writeReply).
 api.post("/objects/:slug/records", async (c) => {
-  const rec = await createRecord(c.get("actor"), c.req.param("slug"), await c.req.json());
+  const rec = await createRecord(c.get("actor"), c.req.param("slug"), await jsonBody(c));
   return c.json(writeReply(c.get("actor"), "created", rec.id, rec));
 });
 api.get("/records/:id", async (c) => c.json(await getRecord(c.req.param("id"))));
 api.patch("/records/:id", async (c) => {
-  const rec = await updateRecord(c.get("actor"), c.req.param("id"), await c.req.json());
+  const rec = await updateRecord(c.get("actor"), c.req.param("id"), await jsonBody(c));
   return c.json(writeReply(c.get("actor"), "updated", rec.id, rec));
 });
 api.delete("/records/:id", async (c) => c.json(await archiveRecord(c.get("actor"), c.req.param("id"))));
@@ -219,15 +239,15 @@ api.post("/records/:id/restore", async (c) => {
 });
 api.get("/records/:id/timeline", async (c) => c.json(await timeline(c.req.param("id"))));
 api.post("/records/:id/activities", async (c) =>
-  c.json(await logActivity(c.get("actor"), { ...(await c.req.json()), record_id: c.req.param("id") })),
+  c.json(await logActivity(c.get("actor"), { ...(await jsonBody(c)), record_id: c.req.param("id") })),
 );
 
 /* ------------------------------- activities -------------------------------- */
 
-api.post("/activities", async (c) => c.json(await logActivity(c.get("actor"), await c.req.json())));
-api.patch("/activities/:id", async (c) => c.json(await updateActivity(c.get("actor"), c.req.param("id"), await c.req.json())));
+api.post("/activities", async (c) => c.json(await logActivity(c.get("actor"), await jsonBody(c))));
+api.patch("/activities/:id", async (c) => c.json(await updateActivity(c.get("actor"), c.req.param("id"), await jsonBody(c))));
 api.delete("/activities/:id", async (c) => c.json(await deleteActivity(c.get("actor"), c.req.param("id"))));
-api.get("/tasks", async (c) => c.json(await listTasks({ open: c.req.query("all") !== "1", record_id: c.req.query("record_id") || undefined })));
+api.get("/tasks", async (c) => c.json(await listTasks({ open: c.req.query("all") !== "1", record_id: c.req.query("record_id") || undefined, limit: Math.max(1, intParam(c.req.query("limit"), "limit", 200, 1000)) })));
 api.get("/search", async (c) => c.json(await searchAll(c.req.query("q") ?? "")));
 
 /* -------------------------- approvals, audit, keys ------------------------- */
@@ -243,19 +263,19 @@ api.get("/audit", async (c) => {
 });
 api.post("/audit/:id/undo", async (c) => {
   userOnly(c);
-  const { force } = await c.req.json().catch(() => ({ force: false }));
+  const { force } = await jsonBody(c).catch(() => ({ force: false }));
   return c.json(await undoEntry(c.get("actor"), c.req.param("id"), !!force));
 });
 
 /* ------------------------------ views / import ----------------------------- */
 
 api.get("/objects/:slug/views", async (c) => c.json(await listViews(c.req.param("slug"))));
-api.post("/objects/:slug/views", async (c) => c.json(await createView(c.get("actor"), c.req.param("slug"), await c.req.json())));
-api.patch("/views/:id", async (c) => c.json(await updateView(c.get("actor"), c.req.param("id"), await c.req.json())));
+api.post("/objects/:slug/views", async (c) => c.json(await createView(c.get("actor"), c.req.param("slug"), await jsonBody(c))));
+api.patch("/views/:id", async (c) => c.json(await updateView(c.get("actor"), c.req.param("id"), await jsonBody(c))));
 api.delete("/views/:id", async (c) => c.json(await deleteView(c.get("actor"), c.req.param("id"))));
 
 api.post("/objects/:slug/import", async (c) => {
-  const { rows, ...opts } = await c.req.json();
+  const { rows, ...opts } = await jsonBody(c);
   return c.json(await importRows(c.get("actor"), c.req.param("slug"), rows, opts));
 });
 api.get("/objects/:slug/export.csv", async (c) => {
@@ -273,11 +293,11 @@ api.get("/webhooks", async (c) => {
 });
 api.post("/webhooks", async (c) => {
   userOnly(c);
-  return c.json(await createWebhook(await c.req.json()));
+  return c.json(await createWebhook(await jsonBody(c)));
 });
 api.patch("/webhooks/:id", async (c) => {
   userOnly(c);
-  return c.json(await updateWebhook(c.req.param("id"), await c.req.json()));
+  return c.json(await updateWebhook(c.req.param("id"), await jsonBody(c)));
 });
 api.delete("/webhooks/:id", async (c) => {
   userOnly(c);
@@ -294,7 +314,7 @@ api.get("/keys", async (c) => {
 });
 api.post("/keys", async (c) => {
   userOnly(c);
-  const { name, scopes } = await c.req.json();
+  const { name, scopes } = await jsonBody(c);
   return c.json(await createApiKey(name ?? "", scopes ?? []));
 });
 api.delete("/keys/:id", async (c) => {

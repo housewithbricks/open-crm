@@ -17,6 +17,8 @@ export const app = new Hono();
 app.onError((err, c) => {
   if (err instanceof CrmError) return c.json({ error: err.message, details: err.details }, err.status as 400);
   if (err instanceof SyntaxError) return c.json({ error: "Invalid JSON body" }, 400);
+  // Postgres data exceptions (class 22: a malformed uuid, date or number) come from bad input, not a server fault.
+  if (/^22/.test((err as { code?: string }).code ?? "")) return c.json({ error: `Invalid value: ${err.message}` }, 400);
   console.error(err);
   return c.json({ error: "Internal server error" }, 500);
 });

@@ -174,6 +174,7 @@ function checkUrl(url: string) {
 }
 
 function checkEvents(events: string[]) {
+  if (!Array.isArray(events)) throw new CrmError("events must be a list");
   const bad = events.filter((e) => e !== "*" && !WEBHOOK_EVENTS.includes(e as WebhookEvent));
   if (bad.length) throw new CrmError(`Unknown events: ${bad.join(", ")}. Events: *, ${WEBHOOK_EVENTS.join(", ")}`);
   if (!events.length) throw new CrmError("Pick at least one event");

@@ -135,7 +135,11 @@ export function checkDistinct<T extends { value: string; label: string }>(choice
 /** Labels (or {value?, label, …}) → options. Refuses two options with the same value unless allowSame. */
 export function normalizeChoices(input: ChoiceInput[] = [], { allowSame = false } = {}) {
   const palette = ["gray", "blue", "violet", "amber", "orange", "green", "red", "teal", "pink"];
+  if (!Array.isArray(input)) throw new CrmError("choices must be a list");
   const out = input.map((c, i) => {
+    if (typeof c !== "string" && (typeof c?.label !== "string" || (c.value !== undefined && typeof c.value !== "string"))) {
+      throw new CrmError(`Option ${i + 1} needs a label (a string, or {label, value?, color?})`);
+    }
     const label = typeof c === "string" ? c : c.label;
     // A label with no letters or digits (e.g. "!!!") still needs a value.
     const value = (typeof c === "string" ? slugify(c) : c.value || slugify(c.label)) || `option_${i + 1}`;

@@ -32,13 +32,20 @@ export async function loadSchema(): Promise<ObjectType[]> {
   return objects;
 }
 
+/** An object by slug, or by plural label when no slug matches. */
 export async function getObject(slug: string) {
-  const s = (await loadSchema()).find((o) => o.slug === slug || o.label_plural.toLowerCase() === slug.toLowerCase());
-  if (!s) {
-    const all = (await loadSchema()).map((o) => o.slug).join(", ");
-    throw new CrmError(`Object "${slug}" not found. Objects: ${all}`, 404);
-  }
+  if (typeof slug !== "string") throw new CrmError("Name the object by its slug");
+  const all = await loadSchema();
+  const s = all.find((o) => o.slug === slug) ?? all.find((o) => o.label_plural.toLowerCase() === slug.toLowerCase());
+  if (!s) throw new CrmError(`Object "${slug}" not found. Objects: ${all.map((o) => o.slug).join(", ")}`, 404);
   return s;
+}
+
+/** A plural label is also a name objects are looked up by, so it can't be another live object's slug or plural. */
+async function checkPluralFree(labelPlural: string, selfId?: string) {
+  const name = labelPlural.toLowerCase();
+  const clash = (await loadSchema()).find((o) => o.id !== selfId && (o.slug === name || o.label_plural.toLowerCase() === name));
+  if (clash) throw new CrmError(`"${labelPlural}" is already the name of ${clash.slug}`, 409);
 }
 
 export function getField(obj: ObjectType, key: string) {
@@ -74,12 +81,21 @@ export type NewObject = {
 
 export async function createObjectType(actor: Actor, input: NewObject) {
   requireScope(actor, "schema");
+  if (typeof input.label !== "string" || !input.label.trim()) throw new CrmError("Object needs a label");
+  for (const k of ["slug", "label_plural", "description", "icon", "color"] as const) {
+    if (input[k] !== undefined && typeof input[k] !== "string") throw new CrmError(`${k} must be a string`);
+  }
+  if (input.fields !== undefined && (!Array.isArray(input.fields) || input.fields.some((f) => !f || typeof f !== "object"))) {
+    throw new CrmError("fields must be a list of field definitions");
+  }
   const labelPlural = input.label_plural || (input.label.endsWith("s") ? input.label : input.label + "s");
   const slug = slugify(input.slug || labelPlural);
   if (!slug) throw new CrmError("Object needs a label");
   const [taken] = await sql<{ archived: boolean }[]>`select archived_at is not null as archived from object_types where slug = ${slug}`;
   if (taken?.archived) throw new CrmError("An archived object uses this name. Restore it from the audit log or pick another name.", 409);
   if (taken) throw new CrmError(`Object "${slug}" already exists`, 409);
+  await checkPluralFree(labelPlural);
+  await checkPluralFree(slug);
   if (input.color && !isColor(input.color)) throw new CrmError(`color must be a hex color like #0ea5e9 or one of ${OBJECT_COLORS.join(", ")}`);
 
   // Check every field before writing anything, so a bad definition leaves nothing behind.
@@ -124,6 +140,7 @@ export async function updateObjectType(actor: Actor, slug: string, patch: Object
   requireScope(actor, "schema");
   const obj = await getObject(slug);
   if (patch.primary_field) getField(obj, patch.primary_field);
+  if (patch.label_plural !== undefined) await checkPluralFree(String(patch.label_plural), obj.id);
   if (patch.color !== undefined && !isColor(patch.color)) {
     throw new CrmError(`color must be a hex color like #0ea5e9 or one of ${OBJECT_COLORS.join(", ")}`);
   }
@@ -160,7 +177,9 @@ type PreparedField = { key: string; type: FieldType; options: FieldOptions };
 
 /** Validate a new field definition. selfTarget is the slug of an object being created, for relations to itself. */
 async function prepareField(input: NewField, selfTarget?: string): Promise<PreparedField> {
-  const key = slugify(input.key || input.label || "");
+  const raw = input.key || input.label || "";
+  if (typeof raw !== "string") throw new CrmError("Field key and label must be strings");
+  const key = slugify(raw);
   if (!key || key === "id") throw new CrmError("Invalid field key");
   if (!FIELD_TYPES.includes(input.type)) throw new CrmError(`Invalid type "${input.type}". Types: ${FIELD_TYPES.join(", ")}`);
   const options: FieldOptions = {};
@@ -233,13 +252,14 @@ export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, fi
     if (f.type !== "select" && f.type !== "multi_select") throw new CrmError(`${f.key} is not a select field`);
     let choices = options.choices ?? [];
     if (patch.choices) {
+      const incoming = normalizeChoices(patch.choices);
       const removed = choices.filter((c) => !patch.choices!.some((n) => n.value === c.value));
       if (removed.length) {
         throw new CrmError(
           `Removing choices (${removed.map((c) => c.value).join(", ")}) is destructive: use request_schema_change with kind "remove_choices"`,
         );
       }
-      choices = normalizeChoices(patch.choices);
+      choices = incoming;
     }
     for (const c of normalizeChoices(patch.add_choices ?? [])) {
       const hit = choices.find((x) => x.value === c.value);
@@ -255,12 +275,13 @@ export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, fi
     required: patch.required ?? f.required,
     position: patch.position ?? f.position,
   };
+  // Snapshot exactly what changed (options live in options.choices) so undo can restore it.
+  const keys = (["label", "description", "required", "position"] as const).filter((k) => next[k] !== f[k]);
+  const choicesChanged = JSON.stringify(f.options.choices ?? null) !== JSON.stringify(options.choices ?? null);
+  if (!keys.length && !choicesChanged) return options;
   await tx`update field_defs set label = ${next.label}, description = ${next.description}, required = ${next.required},
       position = ${next.position}, options = ${json(options)}::jsonb
     where id = ${f.id}`;
-  // Snapshot exactly what changed (options live in options.choices) so undo can restore it.
-  const keys = (["label", "description", "required", "position"] as const).filter((k) => patch[k] !== undefined);
-  const choicesChanged = JSON.stringify(f.options.choices ?? null) !== JSON.stringify(options.choices ?? null);
   const before = { ...pick(f, keys), ...(choicesChanged ? { choices: f.options.choices ?? [] } : {}) };
   const after = { ...pick(next, keys), ...(choicesChanged ? { choices: options.choices ?? [] } : {}) };
   await audit(tx, actor, "field.update", obj.slug, f.id, before, after);

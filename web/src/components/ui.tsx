@@ -1,5 +1,5 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
-import { cn, dot, fmtDate, initials, objColor, tint } from "../lib/format";
+import { cn, dot, fmtDay, initials, objColor, tint } from "../lib/format";
 import { useObject } from "../lib/schema";
 
 /* --------------------------------- controls --------------------------------- */
@@ -202,7 +202,7 @@ export function DueDate({ due, done }: { due: string; done?: boolean }) {
   const t = iso(now);
   const week = iso(new Date(now.getTime() + 7 * 864e5));
   const state = done ? "" : day < t ? "overdue" : day === t ? "today" : day <= week ? "soon" : "";
-  const text = !done && day === t ? "Today" : !done && day < t ? `${fmtDate(due)} · overdue` : fmtDate(due);
+  const text = !done && day === t ? "Today" : !done && day < t ? `${fmtDay(day)} · overdue` : fmtDay(day);
   return (
     <span className={cn("inline-flex h-[22px] items-center whitespace-nowrap rounded-full px-2 text-xs tabular-nums",
       state === "overdue" && "bg-danger/12 text-danger",
