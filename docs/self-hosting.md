@@ -28,6 +28,10 @@ Open CRM is **one container plus Postgres**. Anything that can run a Docker imag
 | `SESSION_SECRET` | no | Signs login sessions. Generated and stored in the database if unset. |
 | `DATABASE_SSL` | no | `require`, `prefer`, `verify-full` or `disable`. Only needed when your database needs TLS but its URL has no `?sslmode=` (Heroku). |
 | `DATABASE_POOL_SIZE` | no | Max Postgres connections (default `10`). |
+| `TRUSTED_PROXY_HOPS` | no | How many reverse proxies in front of the app add to `X-Forwarded-For` (default `1`: Caddy, Railway, Render, Heroku…). The sign-in limiter takes the client address that many entries from the right, so a forged header can't dodge it. Use `2` behind two proxies (e.g. Cloudflare + Caddy) and `0` when nothing is in front (then all clients share one limit). |
+| `CLIENT_IP_HEADER` | no | A header your platform sets to the real client address, e.g. `fly-client-ip` or `cf-connecting-ip`. Wins over `X-Forwarded-For`. |
+| `LOGIN_GLOBAL_MAX` | no | Failed sign-ins from all addresses together, within 15 minutes, before sign-in pauses for 5 minutes (default `100`). One address is paused after 10. |
+| `WEBHOOK_ALLOW_PRIVATE` | no | Set to `1` to allow webhooks to link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`), which are refused by default. Localhost and private networks are always allowed. |
 
 The container:
 - listens on `$PORT` and serves the web UI at `/`, the REST API at `/api`, MCP at `/mcp` and a health check at `/health`;
@@ -65,6 +69,8 @@ docker compose --profile https up -d
 
 This adds [Caddy](https://caddyserver.com), which gets and renews a Let's Encrypt certificate on its own. Ports 80 and 443 must be reachable. (With the no-clone setup, also `curl -fsSLO …/deploy/Caddyfile` into the same folder.)
 
+**Reaching it from other machines over plain HTTP.** Both compose files publish port 8080 on `127.0.0.1` only, so with the `https` profile the app is reachable only through Caddy. To open `http://<server-ip>:8080` to your LAN instead, add `BIND_ADDRESS=0.0.0.0` to `.env`. Anyone who can reach that port sees the sign-in page over unencrypted HTTP, so don't do this on a server with a public IP.
+
 **Landing page.** `docker compose --profile site up -d` also serves the static landing page from `site/` on port 8081. You don't need it to run the CRM.
 
 ### Backups
@@ -72,14 +78,21 @@ This adds [Caddy](https://caddyserver.com), which gets and renews a Let's Encryp
 All your data is in Postgres. A nightly dump is enough for most people:
 
 ```bash
-docker compose exec -T db pg_dump -U opencrm opencrm | gzip > backup-$(date +%F).sql.gz
+docker compose exec -T db pg_dump -U opencrm --clean --if-exists opencrm | gzip > backup-$(date +%F).sql.gz
 ```
 
-Restore into a fresh install:
+`--clean --if-exists` makes the dump drop each table before recreating it, so it restores cleanly over a database the app has already set up.
+
+To restore, start only the database (on a new server, don't start the app first: it would create and seed its own tables), restore in one transaction that stops at the first error, then start the app:
 
 ```bash
-gunzip -c backup-2026-11-06.sql.gz | docker compose exec -T db psql -U opencrm opencrm
+docker compose stop app                       # on a new server: docker compose up -d db
+gunzip -c backup-2026-11-06.sql.gz | docker compose exec -T db \
+  psql -U opencrm -d opencrm -v ON_ERROR_STOP=1 --single-transaction
+docker compose up -d
 ```
+
+If anything fails, nothing is changed. A dump made without `--clean` only restores into an empty database: on a new server, run `docker compose up -d db` (not the whole stack) before restoring it.
 
 You can also export any object as CSV from the UI (Export button) or through the REST API.
 
@@ -200,7 +213,9 @@ MCP is served over HTTPS by whatever is in front of the container (the platform,
 
 ## Security checklist
 
-- Use a long, random `ADMIN_PASSWORD`.
-- Serve over HTTPS. Every option above does, except plain `docker compose up` on a LAN.
+- Use a long, random `ADMIN_PASSWORD`. Changing it signs out every browser. **Settings → API keys & MCP → Sign out everywhere** does the same without a password change.
+- Serve over HTTPS. Every option above does, except plain `docker compose up` with `BIND_ADDRESS=0.0.0.0` on a LAN.
+- The compose files publish the app on `127.0.0.1` only. Leave it that way when you use the `https` profile, so nobody can skip Caddy.
+- Set `TRUSTED_PROXY_HOPS` to match your setup (see the table above) so the sign-in limiter sees real client addresses.
 - Give each agent its own API key with only the scopes it needs, and revoke keys you no longer use.
 - Back up Postgres.

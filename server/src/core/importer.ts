@@ -102,8 +102,13 @@ export async function importRows(actor: Actor, slug: string, rows: Record<string
 
 /* ---------------------------------- export --------------------------------- */
 
+/**
+ * One CSV cell. Text starting with = + - @ tab or CR is prefixed with ' so spreadsheet apps
+ * show it instead of running it as a formula. Numbers are left alone (-5 stays -5).
+ */
 const csvCell = (v: unknown) => {
-  const s = v === null || v === undefined ? "" : String(v);
+  let s = v === null || v === undefined ? "" : String(v);
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
@@ -119,7 +124,8 @@ export async function exportCsv(slug: string) {
         if (v == null) return "";
         if (f.type === "relation") return (Array.isArray(v) ? v : [v]).map((id) => page.refs[id]?.display_name ?? id).join("; ");
         if (f.type === "select") return f.options.choices?.find((c) => c.value === v)?.label ?? v;
-        if (f.type === "multi_select") return (v as string[]).map((x) => f.options.choices?.find((c) => c.value === x)?.label ?? x).join("; ");
+        // Tolerate a scalar where a list is expected (data from before a type change).
+        if (f.type === "multi_select") return (Array.isArray(v) ? v : [v]).map((x) => f.options.choices?.find((c) => c.value === x)?.label ?? x).join("; ");
         return v;
       });
       lines.push([r.id, ...cells, r.created_at, r.updated_at].map((c) => csvCell(c instanceof Date ? c.toISOString() : c)).join(","));

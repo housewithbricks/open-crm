@@ -106,7 +106,8 @@ export function normalizeChoices(input: ChoiceInput[] = []) {
   const palette = ["gray", "blue", "violet", "amber", "orange", "green", "red", "teal", "pink"];
   return input.map((c, i) => {
     const label = typeof c === "string" ? c : c.label;
-    const value = typeof c === "string" ? slugify(c) : c.value || slugify(c.label);
+    // A label with no letters or digits (e.g. "!!!") still needs a value.
+    const value = (typeof c === "string" ? slugify(c) : c.value || slugify(c.label)) || `option_${i + 1}`;
     // Palette names or #rrggbb only; anything else falls back to the palette.
     const color = typeof c !== "string" && isColor(c.color) ? c.color.toLowerCase() : palette[i % palette.length];
     const out: { value: string; label: string; color: string; kind?: "open" | "won" | "lost"; probability?: number } = { value, label, color };

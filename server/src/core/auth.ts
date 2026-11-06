@@ -1,21 +1,23 @@
-import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 import { config } from "../config.js";
 import { getSetting, setSetting, sql } from "../db.js";
 import { CrmError, type Actor, type Scope } from "./types.js";
 
 const SESSION_DAYS = 30;
 let sessionSecret = "";
+const scryptAsync = promisify(scrypt) as (pw: string, salt: string, len: number) => Promise<Buffer>;
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-function hashPassword(pw: string) {
+async function hashPassword(pw: string) {
   const salt = randomBytes(16).toString("hex");
-  return `${salt}:${scryptSync(pw, salt, 64).toString("hex")}`;
+  return `${salt}:${(await scryptAsync(pw, salt, 64)).toString("hex")}`;
 }
 
-function checkPassword(pw: string, stored: string) {
+async function checkPassword(pw: string, stored: string) {
   const [salt, hash] = stored.split(":");
-  const a = scryptSync(pw, salt, 64);
+  const a = await scryptAsync(pw, salt, 64);
   const b = Buffer.from(hash, "hex");
   return a.length === b.length && timingSafeEqual(a, b);
 }
@@ -32,31 +34,56 @@ export async function initAuth() {
     if (config.isProd) throw new Error(msg);
     console.warn(msg);
   }
+  const stored = await getSetting<string>("admin_password");
   if (config.adminPassword) {
-    // env var always wins, so rotating it in Railway just works
-    await setSetting("admin_password", hashPassword(config.adminPassword));
-  } else if (!(await getSetting("admin_password"))) {
+    // The env var always wins, so rotating it in Railway just works. Only rehash when it changed:
+    // a new hash signs everyone out (sessions are bound to it), which is what a rotation should do.
+    if (!stored || !(await checkPassword(config.adminPassword, stored))) {
+      await setSetting("admin_password", await hashPassword(config.adminPassword));
+    }
+  } else if (!stored) {
     const pw = randomBytes(9).toString("base64url");
-    await setSetting("admin_password", hashPassword(pw));
+    await setSetting("admin_password", await hashPassword(pw));
     console.log(`\n[auth] No ADMIN_PASSWORD set. Generated one-time admin password: ${pw}\n`);
   }
 }
 
-export async function login(password: string) {
-  const stored = await getSetting<string>("admin_password");
-  if (!stored || !checkPassword(password, stored)) throw new CrmError("Wrong password", 401);
-  const exp = Date.now() + SESSION_DAYS * 864e5;
-  return { token: `${exp}.${sign(String(exp))}`, maxAge: SESSION_DAYS * 86400 };
+/* --------------------------------- sessions --------------------------------- */
+
+/**
+ * A session cookie is "<expiry>.<signature>". The signature covers the expiry, the session epoch
+ * and a fingerprint of the stored password hash, so a session dies when the password changes or
+ * when the user signs out everywhere (which bumps the epoch). Both are read per request, so this
+ * also holds across several app instances.
+ */
+async function sessionKey() {
+  const rows = await sql<{ key: string; value: unknown }[]>`select key, value from settings where key in ('admin_password', 'session_epoch')`;
+  const get = (k: string) => rows.find((r) => r.key === k)?.value;
+  return `${sessionSecret}:${Number(get("session_epoch") ?? 0)}:${sha256(String(get("admin_password") ?? ""))}`;
 }
 
-const sign = (s: string) => createHmac("sha256", sessionSecret).update(s).digest("base64url");
+const sign = (key: string, s: string) => createHmac("sha256", key).update(s).digest("base64url");
 
-export function verifySession(token?: string) {
+export async function login(password: string) {
+  const stored = await getSetting<string>("admin_password");
+  if (!stored || !(await checkPassword(password, stored))) throw new CrmError("Wrong password", 401);
+  const exp = Date.now() + SESSION_DAYS * 864e5;
+  return { token: `${exp}.${sign(await sessionKey(), String(exp))}`, maxAge: SESSION_DAYS * 86400 };
+}
+
+export async function verifySession(token?: string) {
   if (!token) return false;
-  const [exp, sig] = token.split(".");
-  if (!exp || !sig || Number(exp) < Date.now()) return false;
-  const expected = sign(exp);
+  const [exp, sig, extra] = token.split(".");
+  if (!exp || !sig || extra !== undefined || Number(exp) < Date.now()) return false;
+  const expected = sign(await sessionKey(), exp);
   return expected.length === sig.length && timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
+}
+
+/** Invalidate every session cookie issued so far, on every device. */
+export async function signOutEverywhere() {
+  await sql`insert into settings (key, value) values ('session_epoch', '1'::jsonb)
+            on conflict (key) do update set value = to_jsonb(coalesce((settings.value #>> '{}')::int, 0) + 1)`;
+  return { ok: true };
 }
 
 /* --------------------------------- API keys --------------------------------- */

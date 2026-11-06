@@ -19,6 +19,7 @@ const PASSWORD = "test-pass";
 let server: ChildProcess;
 let cookie = "";
 let key = "";
+let db: postgres.Sql; // direct access to the test database, to set up states the API won't create
 
 async function rest(path: string, opts: { method?: string; body?: unknown; bearer?: string } = {}) {
   const res = await fetch(BASE + "/api" + path, {
@@ -67,7 +68,7 @@ before(async () => {
   url.pathname = "/" + TEST_DB;
 
   server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-    env: { ...process.env, DATABASE_URL: url.toString(), PORT: String(PORT), ADMIN_PASSWORD: PASSWORD, WEB_DIST: "/nonexistent" },
+    env: { ...process.env, DATABASE_URL: url.toString(), PORT: String(PORT), ADMIN_PASSWORD: PASSWORD, WEB_DIST: "/nonexistent", LOGIN_GLOBAL_MAX: "40", TRUSTED_PROXY_HOPS: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -81,13 +82,26 @@ before(async () => {
     if (i === 99) throw new Error("server did not start:\n" + log);
   }
 
+  db = postgres(url.toString(), { max: 2, onnotice: () => {} });
   const login = await fetch(BASE + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD }) });
   assert.equal(login.status, 200);
   cookie = login.headers.get("set-cookie")!.split(";")[0];
   key = (await rest("/keys", { body: { name: "Claude", scopes: ["read", "write", "schema"] } })).data.key;
 });
 
-after(() => server?.kill());
+after(async () => {
+  server?.kill();
+  await db?.end();
+});
+
+async function signIn(headers: Record<string, string> = {}, password = PASSWORD) {
+  const res = await fetch(BASE + "/api/login", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ password }) });
+  return { status: res.status, cookie: res.headers.get("set-cookie")?.split(";")[0] ?? "" };
+}
+
+const asCookie = (c: string) => fetch(BASE + "/api/schema", { headers: { cookie: c } }).then((r) => r.status);
+const auditFor = async (target: string, action: string) =>
+  ((await rest("/audit?limit=500")).data as any[]).find((a) => a.target_id === target && a.action === action);
 
 describe("auth", () => {
   it("rejects a wrong password and anonymous API calls", async () => {
@@ -472,5 +486,247 @@ describe("webhooks", () => {
     } finally {
       recv.close();
     }
+  });
+});
+
+describe("review fixes", () => {
+  it("REST needs the read scope to read data", async () => {
+    for (const scopes of [["write"], ["schema"]]) {
+      const k = (await rest("/keys", { body: { name: `No read ${scopes[0]}`, scopes } })).data.key;
+      const rec = (await rest("/objects/people/records", { body: { name: "Scoped" } })).data;
+      for (const path of ["/objects/people/records", `/records/${rec.id}`, `/records/${rec.id}/timeline`, "/objects/people/export.csv", "/audit", "/changes",
+                          "/dashboard", "/search?q=sco", "/schema", "/tasks", "/objects/people/views", "/objects/deals/groups?field=stage"]) {
+        assert.equal((await rest(path, { bearer: k })).status, 403, `${scopes[0]}-only key reading ${path}`);
+      }
+      assert.equal((await rest("/me", { bearer: k })).status, 200, "a key can still identify itself");
+    }
+    const reader = (await rest("/keys", { body: { name: "Read only", scopes: ["read"] } })).data.key;
+    assert.equal((await rest("/objects/people/records", { bearer: reader })).status, 200);
+  });
+
+  it("keeps both edits when different fields of one record are patched at once", async () => {
+    const d = (await rest("/objects/deals/records", { body: { name: "Race" } })).data;
+    const patches = [{ amount: 1234 }, { stage: "proposal" }, { close_date: "2027-01-02" }, { next_step: "Call" }];
+    const results = await Promise.all(patches.map((body) => rest(`/records/${d.id}`, { method: "PATCH", body })));
+    assert.ok(results.every((r) => r.status === 200));
+    const got = (await rest(`/records/${d.id}`)).data.record.data;
+    assert.deepEqual([got.amount, got.stage, got.close_date, got.next_step], [1234, "proposal", "2027-01-02", "Call"]);
+    const updates = ((await rest("/audit?limit=500")).data as any[]).filter((a) => a.target_id === d.id && a.action === "record.update");
+    assert.equal(updates.length, 4, "one audit entry per edit");
+  });
+
+  it("converts values on a type change, refuses unconvertible ones, and never 500s on stray values", async () => {
+    await rest("/objects", { body: { label: "Gadget", fields: [
+      { label: "Tag", type: "select", choices: [{ label: "Alpha", color: "pink" }, "Beta"] }, { label: "Size", type: "text" }, { label: "Junk", type: "text" }, { label: "Maker", type: "text" },
+    ] } });
+    const mk = (data: object) => rest("/objects/gadgets/records", { body: data }).then((r) => r.data);
+    const g1 = await mk({ name: "G1", tag: "alpha", size: "12", junk: "abc", maker: "Big Co" });
+    const g2 = await mk({ name: "G2", tag: "beta", size: "$1,500", junk: "7", maker: "big-co" });
+    const g3 = await mk({ name: "G3", maker: "!!!" });
+
+    // select → multi_select: scalars become lists, options keep their labels and colors.
+    assert.equal((await rest("/objects/gadgets/fields/tag", { method: "PATCH", body: { type: "multi_select" } })).status, 200);
+    assert.deepEqual((await rest(`/records/${g1.id}`)).data.record.data.tag, ["alpha"]);
+    const tag = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gadgets").fields.find((f: any) => f.key === "tag");
+    assert.equal(tag.options.choices[0].color, "pink");
+
+    // text → number with the same coercion as a normal write.
+    assert.equal((await rest("/objects/gadgets/fields/size", { method: "PATCH", body: { type: "number" } })).status, 200);
+    assert.equal((await rest(`/records/${g2.id}`)).data.record.data.size, 1500);
+
+    // Unconvertible values: refused with counts, nothing changes.
+    const bad = await rest("/objects/gadgets/fields/junk", { method: "PATCH", body: { type: "number" } });
+    assert.equal(bad.status, 409);
+    assert.match(bad.data.error, /1 of 2 values can't be converted/);
+    assert.equal(bad.data.details.examples[0].id, g1.id);
+    const junk = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gadgets").fields.find((f: any) => f.key === "junk");
+    assert.equal(junk.type, "text");
+    assert.equal((await rest(`/records/${g2.id}`)).data.record.data.junk, "7");
+
+    // Agents' type changes go through approval; a refused approval stays pending.
+    const req = await mcp("request_schema_change", { kind: "change_field_type", object: "gadgets", field: "junk", type: "boolean", reason: "flags" });
+    const decided = await rest(`/changes/${req.data.change_request.id}/approve`, { body: {} });
+    assert.equal(decided.status, 409);
+    assert.equal((await rest("/changes?status=pending")).data.some((c: any) => c.id === req.data.change_request.id), true);
+
+    // text → select: every distinct value becomes an option, however many and however odd.
+    assert.equal((await rest("/objects/gadgets/fields/maker", { method: "PATCH", body: { type: "select" } })).status, 200);
+    const maker = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gadgets").fields.find((f: any) => f.key === "maker");
+    const values = maker.options.choices.map((c: any) => c.value);
+    for (const g of [g1, g2, g3]) assert.ok(values.includes((await rest(`/records/${g.id}`)).data.record.data.maker), "stored value is an option");
+    assert.equal((await rest(`/records/${g1.id}`)).data.record.data.maker, (await rest(`/records/${g2.id}`)).data.record.data.maker, '"Big Co" and "big-co" share an option');
+
+    // A stray string in a number field (old data, manual edit) doesn't break sort, filters or the dashboard.
+    const d = (await rest("/objects/deals/records", { body: { name: "Stray", amount: 5 } })).data;
+    await db`update records set data = jsonb_set(data, '{amount}', '"n/a"') where id = ${d.id}`;
+    assert.equal((await rest("/objects/deals/records?sort=amount&dir=desc")).status, 200);
+    assert.equal((await rest(`/objects/deals/records?filters=${encodeURIComponent(JSON.stringify([{ field: "amount", op: "gt", value: 1 }]))}`)).status, 200);
+    assert.equal((await rest("/dashboard")).status, 200);
+    // And a scalar left in a multi-select doesn't break the export.
+    await db`update records set data = jsonb_set(data, '{tag}', '"beta"') where id = ${g2.id}`;
+    const csv = await fetch(BASE + "/api/objects/gadgets/export.csv", { headers: { cookie } });
+    assert.equal(csv.status, 200);
+    assert.match((await csv.text()).split("\r\n").find((l) => l.includes(g2.id))!, /,Beta,/);
+  });
+
+  it("enforces unique fields on restore, undo and concurrent creates", async () => {
+    const a = (await rest("/objects/companies/records", { body: { name: "Uniq A", domain: "uniq.io" } })).data;
+    await rest(`/records/${a.id}`, { method: "DELETE" });
+    const b = (await rest("/objects/companies/records", { body: { name: "Uniq B", domain: "uniq.io" } })).data;
+    assert.ok(b.id, "the domain is free while A is archived");
+    const restore = await rest(`/records/${a.id}/restore`, { body: {} });
+    assert.equal(restore.status, 409);
+    assert.match(restore.data.error, /already exists/);
+    const archive = await auditFor(a.id, "record.archive");
+    assert.equal((await rest(`/audit/${archive.id}/undo`, { body: {} })).status, 409, "undo of the archive is refused too");
+
+    const racers = await Promise.all(Array.from({ length: 6 }, (_, i) => rest("/objects/companies/records", { body: { name: `Racer ${i}`, domain: "race.io" } })));
+    assert.deepEqual(racers.map((r) => r.status).sort(), [200, 409, 409, 409, 409, 409]);
+    const ups = await Promise.all(Array.from({ length: 4 }, () => mcp("upsert_record", { object: "companies", match_on: "domain", data: { name: "Ups", domain: "ups.io" } })));
+    assert.equal(ups.filter((u) => u.data?.action === "created").length, 1, "concurrent upserts create once");
+  });
+
+  it("undoes select option edits: labels, colors, order, kind and probability", async () => {
+    await rest("/objects", { body: { label: "Pipe", fields: [{ label: "Step", type: "select", choices: [{ label: "One", color: "blue" }, { label: "Two", color: "green" }] }] } });
+    const orig = (await rest("/schema")).data.objects.find((o: any) => o.slug === "pipes").fields.find((f: any) => f.key === "step");
+    const r = await mcp("update_field", { object: "pipes", field: "step", options: [
+      { value: "two", label: "Second", color: "red", kind: "won", probability: 90 }, { value: "one", label: "First", color: "#123456", kind: "open", probability: 20 },
+    ] });
+    assert.ok(!r.error, r.error);
+    const entry = await auditFor(orig.id, "field.update");
+    assert.ok(entry.before.choices && entry.after.choices, "options are snapshotted");
+    assert.equal((await rest(`/audit/${entry.id}/undo`, { body: {} })).status, 200);
+    const now = (await rest("/schema")).data.objects.find((o: any) => o.slug === "pipes").fields.find((f: any) => f.key === "step");
+    assert.deepEqual(now.options.choices, orig.options.choices);
+
+    // A later edit is a conflict unless forced.
+    await mcp("update_field", { object: "pipes", field: "step", add_choices: ["Three"] });
+    const add = ((await rest("/audit?limit=500")).data as any[]).filter((a) => a.target_id === orig.id && a.action === "field.update" && !a.undone_at)[0];
+    await mcp("update_field", { object: "pipes", field: "step", options: [{ value: "one", label: "Uno" }, { value: "two", label: "Two" }, { value: "three", label: "Three" }] });
+    const conflict = await rest(`/audit/${add.id}/undo`, { body: {} });
+    assert.equal(conflict.status, 409);
+    assert.deepEqual(conflict.data.details.conflict, ["choices"]);
+    assert.equal((await rest(`/audit/${add.id}/undo`, { body: { force: true } })).status, 200);
+    const forced = (await rest("/schema")).data.objects.find((o: any) => o.slug === "pipes").fields.find((f: any) => f.key === "step");
+    assert.deepEqual(forced.options.choices.map((c: any) => c.value), ["one", "two"]);
+  });
+
+  it("audits every activity edit, makes edits and deletes undoable, and keeps task tools to tasks", async () => {
+    const person = (await rest("/objects/people/records", { body: { name: "Act Person" } })).data;
+    const task = (await mcp("create_task", { title: "Old title", record_ids: [person.id], due_at: "2026-12-01" })).data;
+    await rest(`/activities/${task.id}`, { method: "PATCH", body: { title: "New title", body: "Notes", due_at: "2026-12-05", done: true } });
+    const upd = await auditFor(task.id, "activity.update");
+    assert.deepEqual(Object.keys(upd.after).sort(), ["body", "done_at", "due_at", "kind", "title"]);
+    assert.equal(upd.before.title, "Old title");
+    assert.equal(upd.before.due_at, "2026-12-01T12:00:00.000Z");
+    assert.equal(upd.before.done_at, null);
+    assert.equal((await rest(`/audit/${upd.id}/undo`, { body: {} })).status, 200);
+    const back = (await rest("/tasks?all=1")).data.find((t: any) => t.id === task.id);
+    assert.deepEqual([back.title, back.body, back.due_at, back.done_at], ["Old title", "", "2026-12-01T12:00:00.000Z", null]);
+
+    await rest(`/activities/${task.id}`, { method: "DELETE" });
+    assert.ok(!(await rest("/tasks")).data.some((t: any) => t.id === task.id), "deleted tasks are hidden");
+    assert.ok(!(await rest(`/records/${person.id}/timeline`)).data.some((t: any) => t.id === task.id), "and gone from the timeline");
+    assert.equal((await rest(`/activities/${task.id}`, { method: "PATCH", body: { title: "x" } })).status, 404);
+    const del = await auditFor(task.id, "activity.delete");
+    assert.equal(del.before.title, "Old title");
+    assert.equal((await rest(`/audit/${del.id}/undo`, { body: {} })).status, 200);
+    assert.ok((await rest("/tasks")).data.some((t: any) => t.id === task.id), "undo brings it back");
+
+    const note = (await mcp("log_activity", { kind: "note", body: "Just a note", record_ids: [person.id] })).data;
+    assert.match((await mcp("complete_task", { task_id: note.id })).error!, /not a task/);
+    assert.match((await mcp("update_task", { task_id: note.id, title: "x" })).error!, /not a task/);
+    assert.equal((await rest("/tasks?all=1")).data.find((t: any) => t.id === note.id), undefined);
+  });
+
+  it("shows records in removed options and computes board totals on the server", async () => {
+    const mk = (name: string, stage: string, amount: number) => rest("/objects/deals/records", { body: { name, stage, amount } });
+    await rest("/objects/deals/fields/stage", { method: "PATCH", body: { add_choices: [{ label: "Pilot" }] } });
+    await mk("Pilot 1", "pilot", 1000);
+    await mk("Pilot 2", "pilot", 2500);
+    await rest("/objects/deals/fields/stage", { method: "PATCH", body: { remove_choices: ["pilot"] } });
+
+    const stage = (await rest("/dashboard")).data.pipeline.stages.find((s: any) => s.value === "pilot");
+    assert.deepEqual([stage.count, stage.amount, stage.unknown, stage.label], [2, 3500, true, "pilot"]);
+    const groups = (await rest("/objects/deals/groups?field=stage&sum=amount")).data.groups;
+    const pilot = groups.find((g: any) => g.value === "pilot");
+    assert.deepEqual([pilot.count, pilot.sum, pilot.known], [2, 3500, false]);
+    const total = (await rest("/objects/deals/records?limit=1")).data.total;
+    assert.equal(groups.reduce((t: number, g: any) => t + g.count, 0), total, "group counts cover every record, not just a page");
+    const q = (await rest("/objects/deals/groups?field=stage&q=Pilot")).data.groups;
+    assert.deepEqual(q.map((g: any) => g.count), [2], "groups honour the search");
+  });
+
+  it("escapes CSV cells that a spreadsheet would run as formulas", async () => {
+    await rest("/objects/people/records", { body: { name: "=HYPERLINK(\"http://x\")", title: "+1 bad", phone: "-5" } });
+    const text = await (await fetch(BASE + "/api/objects/people/export.csv", { headers: { cookie } })).text();
+    const line = text.split("\r\n").find((l) => l.includes("HYPERLINK"))!;
+    assert.ok(line.includes(`"'=HYPERLINK(""http://x"")"`), line);
+    assert.ok(line.includes(",'-5,") && line.includes(",'+1 bad,"), line);
+  });
+
+  it("blocks link-local webhook targets and doesn't follow redirects", async () => {
+    for (const url of ["http://169.254.169.254/latest/meta-data", "http://[fe80::1]/", "http://metadata.google.internal/"]) {
+      const r = await rest("/webhooks", { body: { url } });
+      assert.equal(r.status, 400, url);
+      assert.match(r.data.error, /link-local/);
+    }
+    const { createServer } = await import("node:http");
+    let followed = 0;
+    const target = createServer((_q, res) => { followed++; res.end("ok"); }).listen(8796);
+    const redirector = createServer((_q, res) => { res.writeHead(302, { location: "http://localhost:8796/" }); res.end(); }).listen(8797);
+    try {
+      const hook = (await rest("/webhooks", { body: { url: "http://localhost:8797/", events: ["record.created"] } })).data;
+      const r = (await rest(`/webhooks/${hook.id}/test`, { body: {} })).data;
+      assert.deepEqual([r.status, r.error, followed], [302, "HTTP 302", 0]);
+      await rest(`/webhooks/${hook.id}`, { method: "DELETE" });
+    } finally {
+      target.close();
+      redirector.close();
+    }
+  });
+});
+
+describe("sessions", () => {
+  it("signs out everywhere", async () => {
+    const a = (await signIn()).cookie;
+    const b = (await signIn()).cookie;
+    assert.equal(await asCookie(b), 200);
+    assert.equal((await fetch(BASE + "/api/logout-all", { method: "POST", headers: { cookie: a } })).status, 200);
+    assert.equal(await asCookie(a), 401);
+    assert.equal(await asCookie(b), 401);
+    assert.equal(await asCookie(cookie), 401, "including the suite's own session");
+    assert.equal((await rest("/schema", { bearer: key })).status, 200, "API keys are not affected");
+    cookie = (await signIn()).cookie;
+    assert.equal(await asCookie(cookie), 200, "signing in again works");
+    assert.equal((await rest("/logout-all", { body: {}, bearer: key })).status, 403, "agents can't do it");
+  });
+
+  it("ends sessions when the admin password changes", async () => {
+    const { scryptSync, randomBytes } = await import("node:crypto");
+    const [{ value: old }] = await db`select value from settings where key = 'admin_password'`;
+    const salt = randomBytes(16).toString("hex");
+    await db`update settings set value = ${db.json(`${salt}:${scryptSync("rotated", salt, 64).toString("hex")}`)} where key = 'admin_password'`;
+    assert.equal(await asCookie(cookie), 401);
+    assert.equal((await signIn({}, "rotated")).status, 200);
+    await db`update settings set value = ${db.json(old)} where key = 'admin_password'`;
+    assert.equal(await asCookie(cookie), 200, "back to the old password, the old session is valid again");
+  });
+});
+
+// Keep last: it trips the global sign-in limit.
+describe("login limiter", () => {
+  it("keys on the proxy-added address, not one the client forged", async () => {
+    for (let i = 0; i < 10; i++) assert.equal((await signIn({ "x-forwarded-for": `10.0.0.${i}, 9.9.9.9` }, "wrong")).status, 401);
+    assert.equal((await signIn({ "x-forwarded-for": "1.2.3.4, 9.9.9.9" })).status, 429, "a forged left-most entry doesn't reset the count");
+    assert.equal((await signIn({ "x-forwarded-for": "1.2.3.4, 8.8.8.8" })).status, 200, "other clients are unaffected");
+  });
+
+  it("caps failed sign-ins across all addresses", async () => {
+    let last = 0;
+    for (let i = 0; i < 40 && last !== 429; i++) last = (await signIn({ "x-forwarded-for": `7.7.7.${i}` }, "wrong")).status;
+    assert.equal(last, 429);
+    assert.equal((await signIn({ "x-forwarded-for": "6.6.6.6" })).status, 429, "even the right password waits");
+    assert.equal(await asCookie(cookie), 200, "existing sessions keep working");
   });
 });

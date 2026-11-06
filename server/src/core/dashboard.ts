@@ -1,4 +1,5 @@
 import { sql } from "../db.js";
+import { numField } from "./records.js";
 import { loadSchema } from "./schema.js";
 import type { FieldDef, ObjectType } from "./types.js";
 
@@ -62,7 +63,7 @@ export async function dashboard() {
       count(*) filter (where done_at is null and due_at::date = current_date)::int as today,
       count(*) filter (where done_at is null and due_at::date > current_date and due_at::date <= current_date + 7)::int as week,
       count(*) filter (where done_at >= now() - interval '7 days')::int as done_week
-    from activities where kind = 'task'`;
+    from activities where kind = 'task' and deleted_at is null`;
 
   const [{ pending }] = await sql<{ pending: number }[]>`select count(*)::int as pending from change_requests where status = 'pending'`;
 
@@ -80,7 +81,7 @@ export async function dashboard() {
     const lostValues = choices.filter((c) => isLost(c.value)).map((c) => c.value);
 
     const byStage = await sql<{ stage: string | null; n: number; value: number }[]>`
-      select data->>${stage.key} as stage, count(*)::int as n, coalesce(sum((data->>${amount.key})::numeric), 0)::float as value
+      select data->>${stage.key} as stage, count(*)::int as n, coalesce(sum(${numField(amount.key)}), 0)::float as value
       from records where object_type_id = ${obj.id} and deleted_at is null group by 1`;
     const stages = [
       ...choices.map((c) => {
@@ -90,6 +91,12 @@ export async function dashboard() {
           kind: isWon(c.value) ? "won" : isLost(c.value) ? "lost" : "open", probability: c.probability ?? null,
         };
       }),
+      // Values that are no longer options (e.g. a removed stage) still hold deals: show them as-is
+      // so their totals aren't lost and they can be moved.
+      ...byStage.filter((r) => r.stage !== null && !choiceOf(r.stage)).map((r) => ({
+        value: r.stage!, label: r.stage!, color: "gray", count: r.n, amount: r.value,
+        kind: isWon(r.stage!) ? "won" : isLost(r.stage!) ? "lost" : "open", probability: null, unknown: true,
+      })),
       ...byStage.filter((r) => r.stage === null).map((r) => ({ value: "", label: `No ${stage.label.toLowerCase()}`, color: "gray", count: r.n, amount: r.value, kind: "open", probability: null })),
     ];
     const open = stages.filter((s) => s.kind === "open");
@@ -99,7 +106,7 @@ export async function dashboard() {
       if (!values.length) return { n: 0, amount: 0 };
       const [r] = await sql<{ n: number; amount: number }[]>`
         select count(distinct a.target_id)::int as n, coalesce(sum(distinct_amount), 0)::float as amount from (
-          select distinct on (a.target_id) a.target_id, (r.data->>${amount.key})::numeric as distinct_amount
+          select distinct on (a.target_id) a.target_id, ${numField(amount.key, "r.data")} as distinct_amount
           from audit_log a join records r on r.id::text = a.target_id
           where a.object_slug = ${obj.slug} and a.action in ('record.create', 'record.update') and a.undone_at is null
             and a.after->>${stage.key} = any(${values}::text[]) and a.created_at >= now() - make_interval(days => ${days})
@@ -116,16 +123,16 @@ export async function dashboard() {
       and coalesce(data->>${stage.key}, '') <> all(${[...wonValues, ...lostValues]}::text[])`;
     const closing = close
       ? await sql<{ id: string; name: string; close: string; amount: number | null; stage: string | null }[]>`
-          select id, display_name as name, left(data->>${close.key}, 10) as close, (data->>${amount.key})::float as amount, data->>${stage.key} as stage
+          select id, display_name as name, left(data->>${close.key}, 10) as close, ${numField(amount.key)}::float as amount, data->>${stage.key} as stage
           from records where ${openFilter}
             and left(data->>${close.key}, 10) between to_char(current_date - 30, 'YYYY-MM-DD') and to_char(current_date + 30, 'YYYY-MM-DD')
           order by data->>${close.key} limit 6`
       : [];
     const stale = await sql<{ id: string; name: string; updated_at: string; amount: number | null; stage: string | null }[]>`
-      select id, display_name as name, updated_at, (data->>${amount.key})::float as amount, data->>${stage.key} as stage
+      select id, display_name as name, updated_at, ${numField(amount.key)}::float as amount, data->>${stage.key} as stage
       from records where ${openFilter} and updated_at < now() - interval '14 days'
         and not exists (select 1 from activity_links l join activities a on a.id = l.activity_id
-                        where l.record_id = records.id and a.created_at > now() - interval '14 days')
+                        where l.record_id = records.id and a.deleted_at is null and a.created_at > now() - interval '14 days')
       order by updated_at limit 5`;
 
     // Weighted forecast: open value × stage win probability (only when stages have probabilities).
@@ -142,7 +149,7 @@ export async function dashboard() {
         order by a.target_id, date_trunc('month', a.created_at), a.created_at desc)
       select to_char(m, 'YYYY-MM') as month,
         count(*) filter (where st = any(${wonValues}::text[]))::int as won_n,
-        coalesce(sum((r.data->>${amount.key})::numeric) filter (where st = any(${wonValues}::text[])), 0)::float as won_amount,
+        coalesce(sum(${numField(amount.key, "r.data")}) filter (where st = any(${wonValues}::text[])), 0)::float as won_amount,
         count(*) filter (where st = any(${lostValues}::text[]))::int as lost_n
       from moves join records r on r.id::text = moves.target_id and r.deleted_at is null
       group by 1`;
@@ -158,7 +165,7 @@ export async function dashboard() {
     // New pipeline added per week (last 8 weeks), by record creation.
     const created = await sql<{ week: string; n: number; amount: number }[]>`
       select to_char(date_trunc('week', created_at), 'YYYY-MM-DD') as week, count(*)::int as n,
-        coalesce(sum((data->>${amount.key})::numeric), 0)::float as amount
+        coalesce(sum(${numField(amount.key)}), 0)::float as amount
       from records where object_type_id = ${obj.id} and deleted_at is null and created_at >= date_trunc('week', now()) - interval '7 weeks'
       group by 1`;
     const weeks = Array.from({ length: 8 }, (_, i) => {

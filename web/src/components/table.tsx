@@ -23,7 +23,13 @@ export function Td({ className, num, ...rest }: TdHTMLAttributes<HTMLTableCellEl
   );
 }
 
-/** Row that highlights on hover; clickable when onClick is set. */
-export function Tr({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
-  return <tr onClick={onClick} className={cn(onClick && "cursor-pointer [&:hover>td]:bg-hover")}>{children}</tr>;
+/** Row that highlights on hover; clickable when onClick is set, and then focusable and opened with Enter. */
+export function Tr({ children, onClick, label }: { children: ReactNode; onClick?: () => void; label?: string }) {
+  return (
+    <tr onClick={onClick} tabIndex={onClick ? 0 : undefined} aria-label={label}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" && e.target === e.currentTarget) { e.preventDefault(); onClick(); } } : undefined}
+      className={cn(onClick && "cursor-pointer outline-none [&:hover>td]:bg-hover [&:focus-visible>td]:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent")}>
+      {children}
+    </tr>
+  );
 }

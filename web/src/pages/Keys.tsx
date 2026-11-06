@@ -49,8 +49,26 @@ export default function Keys() {
       {keys && !keys.length && <div className="py-8 text-center text-muted">No keys yet. Create one to connect an agent.</div>}
 
       <ConnectGuide url={url} keyText={created?.key ?? "ocrm_…"} />
+      <Sessions />
       {creating && <NewKeyModal onClose={() => setCreating(false)} onCreated={(k) => { setCreated(k); setCreating(false); }} />}
     </div>
+  );
+}
+
+/** Sign out every browser at once, e.g. after using a shared computer. API keys are not affected. */
+function Sessions() {
+  const out = useMutation({ mutationFn: () => api("/logout-all", { body: {} }), onSuccess: () => invalidateAll() });
+  return (
+    <Card className="mt-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <b className="font-medium">Signed-in browsers</b>
+          <div className="text-muted">Sign out on every device, including this one. API keys keep working. Changing ADMIN_PASSWORD does this too.</div>
+        </div>
+        <Button onClick={() => confirm("Sign out on every device, including this one?") && out.mutate()} disabled={out.isPending}>Sign out everywhere</Button>
+      </div>
+      <ErrorBox error={out.error} />
+    </Card>
   );
 }
 

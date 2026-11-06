@@ -48,6 +48,9 @@ export default function Shell({ children }: { children: ReactNode }) {
       <nav className="flex flex-col gap-px overflow-y-auto border-r border-line bg-sidebar px-2 py-3 max-md:flex-row max-md:items-center max-md:border-r-0 max-md:border-b max-md:p-1.5 max-md:[&>*]:flex-none">
         <div className="flex items-center gap-2 px-2 pt-1 pb-3 text-sm font-semibold max-md:p-1.5"><Mark size={20} /><span className="max-md:hidden">Open CRM</span></div>
         <button type="button" className={cn(navItem, "max-md:hidden")} onClick={() => setCmdk(true)}>Search <kbd className="font-sans text-[11px] text-faint">⌘K</kbd></button>
+        <button type="button" className={cn(navItem, "md:hidden")} aria-label="Search" title="Search" onClick={() => setCmdk(true)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3.5 3.5" strokeLinecap="round" /></svg>
+        </button>
         <NavItem to="/">Home</NavItem>
         <NavItem to="/tasks">Tasks {!!tasks?.length && <small className="text-xs text-faint tabular-nums">{tasks.length}</small>}</NavItem>
         <NavItem to="/approvals">
@@ -67,7 +70,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <NavItem to="/settings/webhooks">Webhooks</NavItem>
         <NavItem to="/settings/audit">Audit log</NavItem>
         <div className="flex-1" />
-        <button type="button" className={cn(navItem, "text-muted max-md:hidden")} onClick={async () => { await api("/logout", { body: {} }); invalidateAll(); }}>Sign out</button>
+        <button type="button" className={cn(navItem, "text-muted")} onClick={async () => { await api("/logout", { body: {} }); invalidateAll(); }}>Sign out</button>
       </nav>
       <main className="h-full min-w-0 overflow-auto">
         <div className="max-w-[1280px] px-7 pt-5 pb-12 max-md:p-4">{children}</div>

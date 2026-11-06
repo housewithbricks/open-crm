@@ -2,14 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Fragment, type ReactNode } from "react";
 import { BarRows, StackedColumns, youSeriesColor, type Series } from "../components/charts";
-import { Card, CardHead, Link2, List, ObjIcon } from "../components/ui";
-import { api, type ChangeRequest, type Filter } from "../lib/api";
+import { Card, CardHead, Link2, ObjIcon } from "../components/ui";
+import { api, type Filter } from "../lib/api";
 import { dot, fmtMoney, fmtMoneyCompact } from "../lib/format";
 import { useSchema } from "../lib/schema";
 import { useAppearance } from "../lib/theme";
-import { ChangeRow } from "./Approvals";
 
-type Stage = { value: string; label: string; color: string; count: number; amount: number; kind: "open" | "won" | "lost"; probability: number | null };
+type Stage = { value: string; label: string; color: string; count: number; amount: number; kind: "open" | "won" | "lost"; probability: number | null; unknown?: boolean };
 type Dashboard = {
   growth: { slug: string; total: number; this_week: number; last_week: number }[];
   activity: { day: string; user: number; agent: number }[];
@@ -66,12 +65,13 @@ export default function Home() {
   const navigate = useNavigate();
   const ui = useAppearance();
   const { data: d } = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Dashboard>("/dashboard"), refetchInterval: 60_000 });
-  const { data: pending } = useQuery({ queryKey: ["changes", "pending"], queryFn: () => api<ChangeRequest[]>("/changes?status=pending") });
   const p = d?.pipeline;
   const youColor = youSeriesColor(ui?.accent, SERIES_AGENT);
   const empty = schema && Object.values(schema.counts).every((n) => n === 0);
   const openList = (slug: string, f: Filter[]) => navigate({ to: "/o/$slug", params: { slug }, search: { k: "table", f } });
-  const closedValues = p?.stages.filter((s) => s.kind !== "open").map((s) => s.value) ?? [];
+  // Filters only accept current options; values of removed options are shown on the board instead.
+  const closedValues = p?.stages.filter((s) => s.kind !== "open" && !s.unknown).map((s) => s.value) ?? [];
+  const isUnknown = (v: string) => !!p?.stages.find((s) => s.value === v)?.unknown;
   const money = (n: number) => fmtMoneyCompact(n, p?.currency);
 
   const summary: { text: string; go: () => void }[] = [];
@@ -111,13 +111,6 @@ export default function Home() {
         </Card>
       )}
 
-      {!!pending?.length && (
-        <Card className="border-[color-mix(in_srgb,var(--d-amber)_45%,var(--line))] bg-[color-mix(in_srgb,var(--d-amber)_6%,var(--panel))]">
-          <CardHead title={<>Waiting for your approval <span className="font-normal text-muted">{pending.length}</span></>} />
-          <List flat>{pending.map((c) => <ChangeRow key={c.id} c={c} />)}</List>
-        </Card>
-      )}
-
       {d && (
         <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3">
           {p ? (
@@ -146,11 +139,13 @@ export default function Home() {
               action={<Link2 onClick={() => navigate({ to: "/o/$slug", params: { slug: p.object }, search: { k: "board" } })}>Open board →</Link2>} />
             <BarRows
               format={(v) => money(v)}
-              onPick={(stage) => openList(p.object, stage ? [{ field: p.stage_field, op: "in", value: [stage] }] : [{ field: p.stage_field, op: "is_empty" }])}
+              onPick={(stage) => stage && isUnknown(stage)
+                ? navigate({ to: "/o/$slug", params: { slug: p.object }, search: { k: "board" } })
+                : openList(p.object, stage ? [{ field: p.stage_field, op: "in", value: [stage] }] : [{ field: p.stage_field, op: "is_empty" }])}
               rows={p.stages.filter((s) => s.kind === "open").map((s) => ({
                 key: s.value, value: s.amount, color: dot(s.color),
                 detail: `${s.count} ${s.count === 1 ? "deal" : "deals"}${s.probability !== null ? ` · ${s.probability}%` : ""}`,
-                label: <><i className="size-2 flex-none rounded-full" style={{ background: dot(s.color) }} />{s.label}</>,
+                label: <><i className="size-2 flex-none rounded-full" style={{ background: dot(s.color) }} /><span className={s.unknown ? "text-muted italic" : undefined} title={s.unknown ? "No longer an option" : undefined}>{s.label}</span></>,
               }))}
             />
           </Card>

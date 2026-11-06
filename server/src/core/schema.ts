@@ -1,7 +1,7 @@
-import { json, sql } from "../db.js";
+import { json, sql, type Db } from "../db.js";
 import { isColor, OBJECT_COLORS } from "./settings.js";
 import { audit } from "./audit.js";
-import { normalizeChoices, slugify } from "./fields.js";
+import { coerceValue, normalizeChoices, slugify } from "./fields.js";
 import {
   CrmError,
   FIELD_TYPES,
@@ -187,15 +187,24 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
     }
     options.choices = choices;
   }
-  await sql`update field_defs set
-      label = ${patch.label ?? f.label},
-      description = ${patch.description ?? f.description},
-      required = ${patch.required ?? f.required},
-      position = ${patch.position ?? f.position},
-      options = ${json(options)}::jsonb
-    where id = ${f.id}`;
+  const next = {
+    label: patch.label ?? f.label,
+    description: patch.description ?? f.description,
+    required: patch.required ?? f.required,
+    position: patch.position ?? f.position,
+  };
+  await sql.begin(async (tx) => {
+    await tx`update field_defs set label = ${next.label}, description = ${next.description}, required = ${next.required},
+        position = ${next.position}, options = ${json(options)}::jsonb
+      where id = ${f.id}`;
+    // Snapshot exactly what changed (options live in options.choices) so undo can restore it.
+    const keys = (["label", "description", "required", "position"] as const).filter((k) => patch[k] !== undefined);
+    const choicesChanged = JSON.stringify(f.options.choices ?? null) !== JSON.stringify(options.choices ?? null);
+    const before = { ...pick(f, keys), ...(choicesChanged ? { choices: f.options.choices ?? [] } : {}) };
+    const after = { ...pick(next, keys), ...(choicesChanged ? { choices: options.choices ?? [] } : {}) };
+    await audit(tx, actor, "field.update", obj.slug, f.id, before, after);
+  });
   invalidateSchema();
-  await audit(sql, actor, "field.update", obj.slug, f.id, pick(f, Object.keys(patch)), patch);
   return getField(await getObject(slug), key);
 }
 
@@ -223,46 +232,143 @@ export function describeChange(c: DestructiveChange) {
 /** Run a destructive schema change. Callers decide if approval is needed first. */
 export async function applyDestructive(actor: Actor, c: DestructiveChange) {
   const obj = await getObject(c.object);
-  switch (c.kind) {
-    case "archive_object":
-      if (obj.is_system) throw new CrmError(`${obj.slug} is a built-in object and cannot be archived`);
-      await sql`update object_types set archived_at = now() where id = ${obj.id}`;
-      break;
-    case "archive_field": {
-      const f = getField(obj, c.field);
-      if (f.key === obj.primary_field) throw new CrmError("Cannot archive the primary field");
-      await sql`update field_defs set archived_at = now() where id = ${f.id}`;
-      break;
-    }
-    case "change_field_type": {
-      const f = getField(obj, c.field);
-      if (!FIELD_TYPES.includes(c.type)) throw new CrmError(`Invalid type ${c.type}`);
-      if (c.type === "relation") throw new CrmError("Convert to relation by adding a new relation field instead");
-      const options: FieldOptions = c.type === "select" || c.type === "multi_select" ? { choices: [] } : {};
-      if (c.type === "select" || c.type === "multi_select") {
-        // derive choices from existing values so nothing is lost
-        const vals = await sql<{ v: string }[]>`select distinct data->>${f.key} as v from records
-          where object_type_id = ${obj.id} and data->>${f.key} is not null and deleted_at is null limit 200`;
-        options.choices = normalizeChoices(vals.map((r) => r.v));
-        await sql`update records set data = jsonb_set(data, ${[f.key]}::text[],
-          to_jsonb(regexp_replace(regexp_replace(lower(data->>${f.key}), '[^a-z0-9]+', '_', 'g'), '^_+|_+$', '', 'g')))
-          where object_type_id = ${obj.id} and data ? ${f.key} and jsonb_typeof(data->${f.key}) = 'string'`;
+  let before: unknown = null;
+  let after: unknown = c;
+  try {
+    await sql.begin(async (tx) => {
+      switch (c.kind) {
+        case "archive_object":
+          if (obj.is_system) throw new CrmError(`${obj.slug} is a built-in object and cannot be archived`);
+          await tx`update object_types set archived_at = now() where id = ${obj.id}`;
+          break;
+        case "archive_field": {
+          const f = getField(obj, c.field);
+          if (f.key === obj.primary_field) throw new CrmError("Cannot archive the primary field");
+          await tx`update field_defs set archived_at = now() where id = ${f.id}`;
+          break;
+        }
+        case "change_field_type": {
+          const f = getField(obj, c.field);
+          before = { type: f.type, options: f.options };
+          after = { ...c, converted: await convertFieldType(tx, obj, f, c.type) };
+          break;
+        }
+        case "remove_choices": {
+          const f = getField(obj, c.field);
+          const choices = (f.options.choices ?? []).filter((x) => !c.values.includes(x.value));
+          await tx`update field_defs set options = ${json({ ...f.options, choices })}::jsonb where id = ${f.id}`;
+          break;
+        }
       }
-      if (c.type === "currency") options.currency = "USD";
-      await sql`update field_defs set type = ${c.type}, options = ${json(options)}::jsonb where id = ${f.id}`;
-      break;
-    }
-    case "remove_choices": {
-      const f = getField(obj, c.field);
-      const choices = (f.options.choices ?? []).filter((x) => !c.values.includes(x.value));
-      await sql`update field_defs set options = ${json({ ...f.options, choices })}::jsonb where id = ${f.id}`;
-      break;
-    }
+      await audit(tx, actor, `schema.${c.kind}`, obj.slug, obj.id, before, after);
+    });
+  } finally {
+    invalidateSchema();
   }
-  invalidateSchema();
-  await audit(sql, actor, `schema.${c.kind}`, obj.slug, obj.id, null, c);
 }
 
-function pick(o: any, keys: string[]) {
+/**
+ * Change a field's type and convert every stored value, archived records included, with the
+ * same coercion as a normal write. All or nothing: if any value can't be converted, nothing
+ * changes and the error says how many failed, with examples, so they can be fixed or cleared
+ * first. Returns how many records changed.
+ */
+async function convertFieldType(tx: Db, obj: ObjectType, f: FieldDef, type: FieldType) {
+  if (!FIELD_TYPES.includes(type)) throw new CrmError(`Invalid type ${type}`);
+  if (type === "relation") throw new CrmError("Convert to relation by adding a new relation field instead");
+  if (type === f.type) throw new CrmError(`${f.key} is already ${type}`);
+  const rows = await tx<{ id: string; v: unknown; live: boolean }[]>`
+    select id, data->${f.key} as v, deleted_at is null as live from records
+    where object_type_id = ${obj.id} and data ? ${f.key} for update`;
+
+  const options: FieldOptions = {};
+  if (type === "currency") options.currency = f.options.currency ?? "USD";
+  // Raw value (lowercased) → option value, for select targets.
+  const optionFor = new Map<string, string>();
+  if (type === "select" || type === "multi_select") {
+    // Keep existing options (labels, colors, stage kinds) and add one per other distinct value.
+    const choices = [...(f.options.choices ?? [])];
+    for (const c of choices) for (const k of [c.value, c.label]) optionFor.set(k.toLowerCase(), c.value);
+    const extra: string[] = [];
+    for (const r of rows)
+      for (const x of Array.isArray(r.v) ? r.v : [r.v]) {
+        const s = String(x).trim();
+        if (s && !optionFor.has(s.toLowerCase()) && !extra.some((e) => e.toLowerCase() === s.toLowerCase())) extra.push(s);
+      }
+    normalizeChoices(extra).forEach((c, i) => {
+      // Two raw values can share a slug ("Big Co", "big-co"): they become one option.
+      const hit = choices.find((x) => x.value === c.value);
+      if (!hit) choices.push({ ...c, color: c.color });
+      optionFor.set(extra[i].toLowerCase(), hit?.value ?? c.value);
+    });
+    options.choices = choices;
+  }
+  const target: FieldDef = { ...f, type, options };
+  const labelOf = (x: unknown) => f.options.choices?.find((c) => c.value === x)?.label ?? x;
+
+  const convert = (v: unknown): unknown => {
+    const list = (Array.isArray(v) ? v : [v]).filter((x) => x !== null && x !== undefined && String(x).trim() !== "");
+    if (type === "select" || type === "multi_select") {
+      const vals = [...new Set(list.map((x) => optionFor.get(String(x).trim().toLowerCase())!))];
+      if (type === "select" && vals.length > 1) throw new CrmError(`has ${vals.length} values; a select holds one`);
+      return type === "select" ? (vals[0] ?? null) : vals;
+    }
+    if (!list.length) return null;
+    // Several values (multi-select, many-relation) only fit a text field, as a list.
+    if (list.length > 1) {
+      if (type !== "text" && type !== "long_text") throw new CrmError(`has ${list.length} values; ${type} holds one`);
+      return list.map((x) => String(labelOf(x))).join(", ");
+    }
+    return coerceValue(target, labelOf(list[0]));
+  };
+
+  const failures: { id: string; value: unknown; error: string }[] = [];
+  const updates: { id: string; v: unknown }[] = [];
+  for (const r of rows) {
+    try {
+      let v = convert(r.v);
+      if (Array.isArray(v) && !v.length) v = null;
+      if (JSON.stringify(v) !== JSON.stringify(r.v)) updates.push({ id: r.id, v });
+    } catch (e) {
+      failures.push({ id: r.id, value: r.v, error: (e as Error).message.replace(`${f.key}: `, "") });
+    }
+  }
+  if (failures.length) {
+    const eg = failures.slice(0, 3).map((x) => JSON.stringify(x.value)).join(", ");
+    throw new CrmError(
+      `Can't change ${obj.slug}.${f.key} to ${type}: ${failures.length} of ${rows.length} values can't be converted (e.g. ${eg}). ` +
+        `Fix or clear those values, then try again. Nothing was changed.`,
+      409,
+      { failed: failures.length, total: rows.length, examples: failures.slice(0, 20) },
+    );
+  }
+
+  // Unique fields must stay unique after conversion ("1.0" and "1" both become 1).
+  const unique = f.is_unique && !["boolean", "long_text", "multi_select"].includes(type);
+  if (unique) {
+    const final = new Map(rows.map((r) => [r.id, r.v]));
+    for (const u of updates) final.set(u.id, u.v);
+    const seen = new Map<string, string>();
+    for (const r of rows) {
+      const v = final.get(r.id);
+      if (!r.live || v === null || v === undefined) continue;
+      const k = String(v).toLowerCase();
+      if (seen.has(k)) throw new CrmError(`Can't change ${obj.slug}.${f.key} to ${type}: records ${seen.get(k)} and ${r.id} would both have "${v}", and the field is unique. Nothing was changed.`, 409);
+      seen.set(k, r.id);
+    }
+  }
+
+  for (const u of updates) {
+    await tx`update records set data = ${u.v === null ? tx`data - ${f.key}` : tx`jsonb_set(data, ${[f.key]}::text[], (${json({ v: u.v })}::jsonb)->'v')`}
+      where id = ${u.id}`;
+  }
+  if (f.key === obj.primary_field && updates.length) {
+    await tx`update records set display_name = coalesce(data->>${f.key}, '') where object_type_id = ${obj.id}`;
+  }
+  await tx`update field_defs set type = ${type}, options = ${json(options)}::jsonb, is_unique = ${unique} where id = ${f.id}`;
+  return updates.length;
+}
+
+function pick(o: any, keys: readonly string[]) {
   return Object.fromEntries(keys.map((k) => [k, o[k]]));
 }

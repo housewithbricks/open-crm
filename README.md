@@ -8,8 +8,8 @@ A small, self-hosted CRM where **you and your AI agents are equal clients**. It 
 
 - **Schema stored as data.** Objects (People, Companies, Deals, …) and their fields live in the database. Add a field or a whole object, from the UI or through MCP, and every table, form and board picks it up instantly.
 - **MCP built in** at `/mcp` (Streamable HTTP). Scoped API keys (`read`, `write`, `schema`), one per agent.
-- **Attributed and reversible.** Every write shows up in the record's timeline and the audit log with who made it. **Undo** any change from the audit log; it warns you if the record changed again since.
-- **Guardrails for agents.** Agents can add things freely. Destructive schema changes (archive or retype a field, archive an object, remove options) go to an **Approvals** inbox.
+- **Attributed and reversible.** Every write shows up in the record's timeline and the audit log with who made it. From the audit log you can **undo** record creates, edits, archives and restores; note and task creates, edits and deletes; new and edited fields (including option labels, colors, order and stage settings); new objects; and archived fields and objects. Undo warns you if the thing changed again since. Field type changes and removed options can't be undone.
+- **Guardrails for agents.** Agents can add things freely. Destructive schema changes (archive or retype a field, archive an object, remove options) go to an **Approvals** inbox. A type change converts every stored value or, if some can't be converted, is refused with a count and changes nothing.
 - **Views, filters, import and export.** Save filtered views (agents can too), import CSVs with column mapping and dedupe, and export any object.
 - **Webhooks.** Signed HTTP events (`record.created`, `record.updated`, `schema.changed`, …) so automations and agents can react.
 - **One container + Postgres.** Runs on a laptop, a VPS, Railway, Render, Fly.io, DigitalOcean, Heroku or your own PaaS.
@@ -55,9 +55,9 @@ Exact config files for each client are in **[docs/connecting-agents.md](docs/con
 
 | Scope | Tools |
 |---|---|
-| read | `describe_schema`, `search`, `list_records` (filters: eq, neq, contains, gt/gte/lt/lte, in, is_empty, not_empty; or a saved `view`), `get_record` (with related records + timeline), `list_views`, `list_tasks` |
-| write | `create_record`, `update_record`, `upsert_record` (dedupe on email/domain/…), `bulk_upsert_records` (up to 500; relations by name), `archive_record`, `log_activity`, `create_task`, `complete_task`, `save_view` |
-| schema | `create_object_type`, `update_object_type`, `add_field`, `update_field` (add options), `request_schema_change` (goes to Approvals) |
+| read | `describe_schema`, `search`, `list_records` (filters: eq, neq, contains, gt/gte/lt/lte, between, in/not_in, is_empty, not_empty; or a saved `view`), `get_record` (with related records + timeline), `list_views`, `list_tasks`, `get_overview` (pipeline, win rate, tasks, activity) |
+| write | `create_record`, `update_record`, `upsert_record` (dedupe on email/domain/…), `bulk_upsert_records` (up to 500; relations by name), `archive_record`, `log_activity`, `create_task`, `update_task`, `complete_task`, `save_view`, `update_view`, `delete_view` |
+| schema | `create_object_type`, `update_object_type`, `add_field`, `update_field` (add, rename, recolor, reorder options; stage kind and win %), `request_schema_change` (goes to Approvals) |
 
 Resources: `crm://schema`, `crm://records/{id}`. Prompts: `pipeline_review`, `meeting_prep`.
 
@@ -85,7 +85,7 @@ Tests boot the real server against a fresh `opencrm_test` database, created from
 - `x-opencrm-event`
 - `x-opencrm-signature: sha256=<HMAC-SHA256 of the raw body with the endpoint secret>`
 
-Events: `record.created`, `record.updated`, `record.archived`, `record.restored`, `activity.created`, `schema.changed`, `change.requested`, `change.decided`. Failed deliveries are retried twice.
+Events: `record.created`, `record.updated`, `record.archived`, `record.restored`, `activity.created`, `schema.changed`, `change.requested`, `change.decided`. Failed deliveries are retried twice. Redirects are not followed. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10) are refused unless `WEBHOOK_ALLOW_PRIVATE=1`; localhost and private networks are allowed.
 
 ## Layout
 

@@ -17,6 +17,8 @@ export const sql = postgres(config.databaseUrl, {
 });
 
 export type Sql = typeof sql;
+/** The pool or an open transaction: core helpers that take one can run inside either. */
+export type Db = Sql | postgres.TransactionSql;
 
 /** Pass a value to a `${json(x)}::jsonb` parameter. postgres.js v4 serializes it itself, so don't stringify. */
 export const json = (v: unknown) => (v ?? null) as any;
@@ -214,6 +216,16 @@ const migrations: { id: number; name: string; sql: string }[] = [
         from jsonb_array_elements(f.options->'choices') with ordinality as t(c, ord)))
       from object_types o
       where f.object_type_id = o.id and o.slug = 'deals' and f.key = 'stage' and f.options ? 'choices';
+    `,
+  },
+  {
+    id: 6,
+    name: "activity_soft_delete",
+    sql: /* sql */ `
+      -- Deleting an activity hides it instead, so the delete can be undone from the audit log.
+      alter table activities add column deleted_at timestamptz;
+      drop index activities_open_tasks_idx;
+      create index activities_open_tasks_idx on activities (due_at) where kind = 'task' and done_at is null and deleted_at is null;
     `,
   },
 ];

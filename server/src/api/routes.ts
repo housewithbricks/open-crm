@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { deleteActivity, listTasks, logActivity, timeline, updateActivity } from "../core/activities.js";
 import { listAudit } from "../core/audit.js";
-import { actorFromApiKey, createApiKey, listApiKeys, login, revokeApiKey, verifySession } from "../core/auth.js";
+import { actorFromApiKey, createApiKey, listApiKeys, login, revokeApiKey, signOutEverywhere, verifySession } from "../core/auth.js";
 import { decideChange, listChanges, requestOrApply } from "../core/changes.js";
 import {
   archiveRecord,
   counts,
   createRecord,
   getRecord,
+  groupRecords,
   listRecords,
   restoreRecord,
   searchAll,
@@ -16,7 +17,7 @@ import {
   type Filter,
 } from "../core/records.js";
 import { addField, createObjectType, loadSchema, updateField, updateObjectType } from "../core/schema.js";
-import { CrmError, userActor, type Actor } from "../core/types.js";
+import { CrmError, requireScope, userActor, type Actor } from "../core/types.js";
 import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
 import { dashboard } from "../core/dashboard.js";
@@ -32,12 +33,54 @@ export const api = new Hono<Env>();
 
 /* ---------------------------------- auth ----------------------------------- */
 
-const attempts = new Map<string, { n: number; until: number }>();
+/**
+ * The client address used for the login limiter. Behind N proxies that append to
+ * X-Forwarded-For (TRUSTED_PROXY_HOPS, default 1), the real address is the Nth entry from the
+ * right; anything further left was sent by the client and can be forged. A platform header
+ * (CLIENT_IP_HEADER) wins when set. With 0 hops there is no address to go on (the app is mounted
+ * behind a fetch handler), so all clients share one bucket.
+ */
+function clientIp(c: { req: { header: (h: string) => string | undefined } }) {
+  if (config.clientIpHeader) return c.req.header(config.clientIpHeader)?.trim() || "unknown";
+  if (config.trustedProxyHops <= 0) return "direct";
+  const xff = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return xff[xff.length - config.trustedProxyHops] ?? xff[0] ?? "unknown";
+}
+
+const PER_IP_MAX = 10;
+const LOCK_MS = 5 * 60_000;
+const WINDOW_MS = 15 * 60_000;
+type Bucket = { n: number; first: number; until: number };
+const attempts = new Map<string, Bucket>();
+let everyone: Bucket | undefined;
+
+/** A finished lockout, or a window with no recent failures, starts the count over. */
+const fresh = (b: Bucket | undefined, now: number): Bucket =>
+  !b || (b.until ? b.until <= now : now - b.first > WINDOW_MS) ? { n: 0, first: now, until: 0 } : b;
+
+function fail(b: Bucket, max: number, now: number) {
+  b.n++;
+  if (b.n >= max) b.until = now + LOCK_MS;
+}
+
+/** Keep the map small: drop finished entries, then the oldest if an attacker sprays addresses. */
+function prune(now: number) {
+  if (attempts.size < 1000) return;
+  for (const [ip, b] of attempts) if (fresh(b, now).n === 0) attempts.delete(ip);
+  for (const ip of attempts.keys()) {
+    if (attempts.size <= 5000) break;
+    attempts.delete(ip);
+  }
+}
 
 api.post("/login", async (c) => {
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0] ?? "local";
-  const a = attempts.get(ip);
-  if (a && a.n >= 10 && a.until > Date.now()) throw new CrmError("Too many attempts, try again in a few minutes", 429);
+  const now = Date.now();
+  const ip = clientIp(c);
+  const mine = fresh(attempts.get(ip), now);
+  everyone = fresh(everyone, now);
+  if (mine.until > now) throw new CrmError("Too many attempts, try again in a few minutes", 429);
+  // A global cap too, so spreading guesses over many addresses doesn't help.
+  if (everyone.until > now) throw new CrmError("Too many failed sign-ins recently, try again in a few minutes", 429);
   const { password } = await c.req.json<{ password: string }>();
   try {
     const { token, maxAge } = await login(password ?? "");
@@ -47,7 +90,13 @@ api.post("/login", async (c) => {
     setCookie(c, COOKIE, token, { httpOnly: true, sameSite: "Lax", secure: https, path: "/", maxAge });
     return c.json({ ok: true });
   } catch (e) {
-    attempts.set(ip, { n: (a?.n ?? 0) + 1, until: Date.now() + 5 * 60_000 });
+    if (e instanceof CrmError && e.status === 401) {
+      fail(mine, PER_IP_MAX, now);
+      fail(everyone, config.loginGlobalMax, now);
+      attempts.delete(ip); // re-insert so the map stays ordered by last failure
+      attempts.set(ip, mine);
+      prune(now);
+    }
     throw e;
   }
 });
@@ -59,7 +108,7 @@ api.post("/logout", (c) => {
 
 // Everything below needs a session cookie or an API key (Bearer).
 api.use("*", async (c, next) => {
-  if (verifySession(getCookie(c, COOKIE))) {
+  if (await verifySession(getCookie(c, COOKIE))) {
     c.set("actor", userActor);
     return next();
   }
@@ -67,6 +116,8 @@ api.use("*", async (c, next) => {
   const agent = await actorFromApiKey(bearer);
   if (!agent) throw new CrmError("Not signed in", 401);
   c.set("actor", agent);
+  // Reading CRM data (records, search, export, audit, dashboard…) needs the read scope.
+  if (c.req.method === "GET" && !/\/me$/.test(c.req.path)) requireScope(agent, "read");
   return next();
 });
 
@@ -79,6 +130,12 @@ api.get("/settings", async (c) => c.json(await getUiSettings()));
 api.patch("/settings", async (c) => {
   userOnly(c);
   return c.json(await updateUiSettings(await c.req.json()));
+});
+api.post("/logout-all", async (c) => {
+  userOnly(c);
+  await signOutEverywhere();
+  deleteCookie(c, COOKIE, { path: "/" });
+  return c.json({ ok: true });
 });
 api.get("/me", (c) => c.json({ actor: c.get("actor"), mcp_url: `${config.publicUrl ?? new URL(c.req.url).origin}/mcp` }));
 
@@ -105,24 +162,31 @@ api.delete("/objects/:slug/fields/:key", async (c) =>
 
 /* --------------------------------- records --------------------------------- */
 
-api.get("/objects/:slug/records", async (c) => {
-  const q = c.req.query();
+function listParams(q: Record<string, string>) {
   let filters: Filter[] | undefined;
   try {
     filters = q.filters ? JSON.parse(q.filters) : undefined;
   } catch {
     throw new CrmError("filters must be JSON");
   }
+  return { q: q.q, filters, sort: q.sort, dir: q.dir as "asc" | "desc" };
+}
+
+api.get("/objects/:slug/records", async (c) => {
+  const q = c.req.query();
   return c.json(
     await listRecords(c.req.param("slug"), {
-      q: q.q,
-      filters,
-      sort: q.sort,
-      dir: q.dir as "asc" | "desc",
+      ...listParams(q),
       limit: q.limit ? Number(q.limit) : 100,
       offset: q.offset ? Number(q.offset) : 0,
     }),
   );
+});
+// Counts (and an optional number-field sum) per select value, for board columns.
+api.get("/objects/:slug/groups", async (c) => {
+  const q = c.req.query();
+  if (!q.field) throw new CrmError("field is required");
+  return c.json(await groupRecords(c.req.param("slug"), q.field, { ...listParams(q), sum: q.sum || undefined }));
 });
 api.post("/objects/:slug/records", async (c) => c.json(await createRecord(c.get("actor"), c.req.param("slug"), await c.req.json())));
 api.get("/records/:id", async (c) => c.json(await getRecord(c.req.param("id"))));

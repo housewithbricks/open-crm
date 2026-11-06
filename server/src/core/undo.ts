@@ -1,7 +1,8 @@
 import { sql } from "../db.js";
-import { deleteActivity } from "./activities.js";
+import { deleteActivity, restoreActivity, revertActivityUpdate } from "./activities.js";
 import { archiveRecord, getRecord, restoreRecord, updateRecord } from "./records.js";
-import { applyDestructive, invalidateSchema, updateField } from "./schema.js";
+import { applyDestructive, getField, getObject, invalidateSchema, updateField } from "./schema.js";
+import { json } from "../db.js";
 import { audit } from "./audit.js";
 import { CrmError, notFound, type Actor } from "./types.js";
 
@@ -11,6 +12,8 @@ export const UNDOABLE = new Set([
   "record.archive",
   "record.restore",
   "activity.create",
+  "activity.update",
+  "activity.delete",
   "field.create",
   "field.update",
   "object.create",
@@ -61,6 +64,12 @@ export async function undoEntry(actor: Actor, id: string, force = false) {
     case "activity.create":
       await deleteActivity(actor, t);
       break;
+    case "activity.update":
+      await revertActivityUpdate(actor, t, e.before ?? {}, e.after ?? {}, force);
+      break;
+    case "activity.delete":
+      await restoreActivity(actor, t);
+      break;
     case "object.create":
       await applyDestructive(actor, { kind: "archive_object", object: e.object_slug! });
       break;
@@ -80,19 +89,50 @@ export async function undoEntry(actor: Actor, id: string, force = false) {
       await audit(sql, actor, "field.unarchive", e.after.object, t, null, e.after);
       break;
     }
-    case "field.update": {
-      const [f] = await sql<{ key: string }[]>`select key from field_defs where id = ${t}`;
-      if (!f) throw notFound("Field");
-      const { add_choices, choices, ...restore } = e.before ?? {};
-      await updateField(actor, e.object_slug!, f.key, restore);
-      if (e.after?.add_choices?.length) {
-        const { normalizeChoices } = await import("./fields.js");
-        const values = normalizeChoices(e.after.add_choices).map((c) => c.value);
-        await applyDestructive(actor, { kind: "remove_choices", object: e.object_slug!, field: f.key, values });
-      }
+    case "field.update":
+      await undoFieldUpdate(actor, e, force);
       break;
-    }
   }
   await sql`update audit_log set undone_at = now() where id = ${id}`;
   return { undone: true, id };
+}
+
+/**
+ * Put a field's label, description, required flag, position and select options back as they
+ * were before the edit. Options are snapshotted whole (labels, colors, order, stage kind and
+ * probability). Refuses if the field changed again since, unless force is set.
+ */
+async function undoFieldUpdate(actor: Actor, e: Entry, force: boolean) {
+  const [row] = await sql<{ key: string }[]>`select key from field_defs where id = ${e.target_id} and archived_at is null`;
+  if (!row) throw notFound("Field");
+  const f = getField(await getObject(e.object_slug!), row.key);
+  const before = e.before ?? {};
+  const after = e.after ?? {};
+
+  // Entries written before options were snapshotted: only "added options" can be reversed.
+  if (!("choices" in before) && (after.choices || after.add_choices)) {
+    if (after.choices) throw new CrmError("This edit was logged before option changes could be undone. Edit the options by hand instead.");
+    const { normalizeChoices } = await import("./fields.js");
+    const { add_choices: _, ...restore } = before;
+    await updateField(actor, e.object_slug!, f.key, restore);
+    const values = normalizeChoices(after.add_choices).map((c) => c.value);
+    await applyDestructive(actor, { kind: "remove_choices", object: e.object_slug!, field: f.key, values });
+    return;
+  }
+
+  const current: Record<string, unknown> = { label: f.label, description: f.description, required: f.required, position: f.position, choices: f.options.choices ?? [] };
+  const keys = Object.keys(after).filter((k) => k in current);
+  const drifted = keys.filter((k) => !same(current[k], after[k]));
+  if (drifted.length && !force) {
+    throw new CrmError(`This field changed again since this edit (${drifted.join(", ")}). Undo anyway to overwrite it.`, 409, { conflict: drifted });
+  }
+  const next = { ...current, ...Object.fromEntries(keys.map((k) => [k, before[k]])) } as typeof current;
+  await sql.begin(async (tx) => {
+    await tx`update field_defs set label = ${next.label as string}, description = ${next.description as string},
+      required = ${next.required as boolean}, position = ${next.position as number},
+      options = ${json(keys.includes("choices") ? { ...f.options, choices: next.choices } : f.options)}::jsonb where id = ${f.id}`;
+    await audit(tx, actor, "field.update", e.object_slug, f.id,
+      Object.fromEntries(keys.map((k) => [k, current[k]])), Object.fromEntries(keys.map((k) => [k, next[k]])));
+  });
+  invalidateSchema();
 }

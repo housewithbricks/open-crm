@@ -9,9 +9,9 @@ Open CRM is an MCP server. Any MCP client can connect to it:
 | **Auth** | `Authorization: Bearer ocrm_…`, or `?key=ocrm_…` in the URL for clients that only take a URL |
 
 First create a key in **Settings → API keys & MCP**. Give each agent its own key. Its changes show up under the key's name, and you can revoke it on its own. Scopes:
-- `read` lets it search and view.
+- `read` lets it search and view. Over MCP and REST, a key without it can't read any records, search, exports, the audit log or the dashboard.
 - `write` lets it create and update records, notes and tasks.
-- `schema` lets it add objects and fields. Destructive changes still wait for your approval.
+- `schema` lets it add objects and fields. Destructive changes (archiving a field or object, changing a field's type, removing options) still wait for your approval.
 
 Below, replace `https://YOUR-HOST` with your Open CRM address and `ocrm_…` with your key.
 

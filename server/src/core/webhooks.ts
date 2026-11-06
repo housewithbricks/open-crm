@@ -1,4 +1,8 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
+import http from "node:http";
+import https from "node:https";
+import { isIP } from "node:net";
 import { sql } from "../db.js";
 import { CrmError, notFound } from "./types.js";
 
@@ -58,28 +62,68 @@ export function emit(payload: EventPayload) {
   })();
 }
 
+/**
+ * Link-local addresses (169.254.0.0/16, fe80::/10), which include the cloud metadata service,
+ * and the other well-known metadata addresses. Localhost and private ranges stay allowed:
+ * self-hosters point webhooks at their own local services. WEBHOOK_ALLOW_PRIVATE=1 allows all.
+ */
+export function isBlockedAddress(ip: string) {
+  if (process.env.WEBHOOK_ALLOW_PRIVATE === "1") return false;
+  const a = ip.toLowerCase().replace(/^\[|\]$/g, "").replace(/^::ffff:(?=\d+\.)/, ""); // IPv4-mapped IPv6
+  if (isIP(a) === 4) return a.startsWith("169.254.") || a === "100.100.100.200";
+  if (isIP(a) === 6) return /^fe[89ab][0-9a-f]:/.test(a) || a === "fd00:ec2::254";
+  return a === "metadata.google.internal" || a === "metadata";
+}
+
+const blocked = (host: string, ip: string) =>
+  Object.assign(new Error(`${host} points at ${ip}, a link-local or cloud metadata address. Set WEBHOOK_ALLOW_PRIVATE=1 to allow it.`), { code: "EBLOCKED" });
+
+/** DNS lookup that refuses blocked addresses, checked at connect time so a hostname can't sneak past. */
+const guardedLookup: any = (host: string, opts: any, cb: (err: Error | null, address: string | LookupAddress[], family?: number) => void) =>
+  dnsLookup(host, opts, (err, address: string | LookupAddress[], family?: number) => {
+    if (err) return cb(err, address, family);
+    const bad = (Array.isArray(address) ? address : [{ address, family }]).find((x) => isBlockedAddress(x.address as string));
+    if (bad) return cb(blocked(host, bad.address as string), address, family);
+    cb(null, address, family);
+  });
+
+/** POST without following redirects (a 3xx is reported as a failed delivery). */
+function post(url: string, headers: Record<string, string>, body: string) {
+  return new Promise<number>((resolve, reject) => {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    if (isBlockedAddress(host)) return reject(blocked(u.hostname, host));
+    const req = (u.protocol === "https:" ? https : http).request(
+      u,
+      { method: "POST", headers: { ...headers, "content-length": String(Buffer.byteLength(body)) }, lookup: guardedLookup, signal: AbortSignal.timeout(8000) },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 async function deliver(hook: Hook, payload: unknown, attempt = 1): Promise<{ status: number | null; error: string | null }> {
   const body = JSON.stringify(payload);
   let status: number | null = null;
   let error: string | null = null;
+  let retry = true;
   try {
-    const res = await fetch(hook.url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "OpenCRM-Webhooks/1",
-        "x-opencrm-event": (payload as EventPayload).event,
-        "x-opencrm-signature": sign(hook.secret, body),
-      },
-      body,
-      signal: AbortSignal.timeout(8000),
-    });
-    status = res.status;
-    if (!res.ok) error = `HTTP ${res.status}`;
+    status = await post(hook.url, {
+      "content-type": "application/json",
+      "user-agent": "OpenCRM-Webhooks/1",
+      "x-opencrm-event": (payload as EventPayload).event,
+      "x-opencrm-signature": sign(hook.secret, body),
+    }, body);
+    if (status < 200 || status >= 300) error = `HTTP ${status}`;
   } catch (e) {
     error = (e as Error).message;
+    retry = (e as { code?: string }).code !== "EBLOCKED";
   }
-  if (error && attempt < 3) {
+  if (error && retry && attempt < 3) {
     await new Promise((r) => setTimeout(r, attempt * 2000));
     return deliver(hook, payload, attempt + 1);
   }
@@ -90,11 +134,15 @@ async function deliver(hook: Hook, payload: unknown, attempt = 1): Promise<{ sta
 /* ------------------------------- management -------------------------------- */
 
 function checkUrl(url: string) {
+  let u: URL;
   try {
-    const u = new URL(url);
+    u = new URL(url);
     if (!/^https?:$/.test(u.protocol)) throw new Error();
   } catch {
     throw new CrmError("Webhook URL must be an http(s) URL");
+  }
+  if (isBlockedAddress(u.hostname)) {
+    throw new CrmError("Webhook URL points at a link-local or cloud metadata address. Set WEBHOOK_ALLOW_PRIVATE=1 to allow it.");
   }
 }
 

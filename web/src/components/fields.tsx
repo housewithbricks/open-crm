@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api, type FieldDef, type RecordList, type Ref } from "../lib/api";
 import { cn, dot, fmtDate, fmtMoney } from "../lib/format";
 import { Select } from "./select";
@@ -43,7 +43,8 @@ export function FieldValue({ field, value, refs, onOpen }: { field: FieldDef; va
     case "select":
       return <ChoiceTag field={field} value={value} />;
     case "multi_select":
-      return <>{(value as string[]).map((v) => <ChoiceTag key={v} field={field} value={v} />)}</>;
+      // A scalar can be left over from before a type change; show it rather than crash.
+      return <>{(Array.isArray(value) ? value : [value]).map((v) => <ChoiceTag key={v} field={field} value={v} />)}</>;
     case "email":
       return <a className={refClass} href={`mailto:${value}`} onClick={(e) => e.stopPropagation()}>{value}</a>;
     case "url": {
@@ -57,7 +58,8 @@ export function FieldValue({ field, value, refs, onOpen }: { field: FieldDef; va
           {ids.map((id, i) => (
             <span key={id}>
               {i > 0 && ", "}
-              <span className={refClass} onClick={(e) => { e.stopPropagation(); onOpen?.(id); }}>{refs?.[id]?.display_name || "(missing)"}</span>
+              <button type="button" className={cn(refClass, "text-left")} onClick={(e) => { e.stopPropagation(); onOpen?.(id); }}
+                onKeyDown={(e) => e.stopPropagation()}>{refs?.[id]?.display_name || "(missing)"}</button>
             </span>
           ))}
         </>
@@ -70,6 +72,8 @@ export function FieldValue({ field, value, refs, onOpen }: { field: FieldDef; va
 
 export function RelationPicker({ field, value, refs, onChange }: { field: FieldDef; value: any; refs?: Record<string, Ref>; onChange: (v: any) => void }) {
   const [q, setQ] = useState("");
+  const [active, setActive] = useState(0);
+  const listId = useId();
   const { data } = useQuery({
     queryKey: ["records", field.options.target, { q, limit: 8 }],
     queryFn: () => api<RecordList>(`/objects/${field.options.target}/records?limit=8&q=${encodeURIComponent(q)}`),
@@ -77,6 +81,9 @@ export function RelationPicker({ field, value, refs, onChange }: { field: FieldD
   const many = !!field.options.multiple;
   const selected: string[] = value ? (Array.isArray(value) ? value : [value]) : [];
   const nameOf = (id: string) => refs?.[id]?.display_name ?? data?.records.find((r) => r.id === id)?.display_name ?? "…";
+  const options = data?.records.filter((r) => !selected.includes(r.id)) ?? [];
+  const cur = Math.min(active, Math.max(options.length - 1, 0));
+  const pick = (id: string) => { onChange(many ? [...selected, id] : id); setActive(0); };
   return (
     <div>
       {selected.length > 0 && (
@@ -84,16 +91,26 @@ export function RelationPicker({ field, value, refs, onChange }: { field: FieldD
           {selected.map((id) => (
             <span key={id} className="inline-flex h-[26px] items-center gap-1 rounded-ctl border border-line-2 bg-panel pl-2 text-xs">
               {nameOf(id)}
-              <button type="button" aria-label="Remove" className="size-5 rounded text-faint hover:bg-hover hover:text-ink" onClick={() => onChange(many ? selected.filter((x) => x !== id) : null)}>×</button>
+              <button type="button" aria-label={`Remove ${nameOf(id)}`} className="size-5 rounded text-faint hover:bg-hover hover:text-ink" onClick={() => onChange(many ? selected.filter((x) => x !== id) : null)}>×</button>
             </span>
           ))}
         </div>
       )}
-      <input className={inputClass} autoFocus placeholder={`Search ${field.options.target}…`} value={q} onChange={(e) => setQ(e.target.value)} />
-      <div className="mt-1 max-h-[200px] overflow-y-auto">
-        {data?.records.filter((r) => !selected.includes(r.id)).map((r) => (
-          <div key={r.id} className="flex h-[30px] cursor-pointer items-center rounded-ctl px-2 hover:bg-hover"
-            onMouseDown={(e) => { e.preventDefault(); onChange(many ? [...selected, r.id] : r.id); }}>
+      <input className={inputClass} autoFocus placeholder={`Search ${field.options.target}…`} value={q}
+        role="combobox" aria-expanded={options.length > 0} aria-controls={listId} aria-autocomplete="list"
+        aria-activedescendant={options[cur] ? `${listId}-${options[cur].id}` : undefined}
+        onChange={(e) => { setQ(e.target.value); setActive(0); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setActive(Math.min(cur + 1, options.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setActive(Math.max(cur - 1, 0)); }
+          else if (e.key === "Enter" && options[cur]) { e.preventDefault(); e.stopPropagation(); pick(options[cur].id); }
+        }} />
+      <div id={listId} role="listbox" aria-label={`${field.label} options`} className="mt-1 max-h-[200px] overflow-y-auto">
+        {options.map((r, i) => (
+          <div key={r.id} id={`${listId}-${r.id}`} role="option" aria-selected={i === cur}
+            className={cn("flex h-[30px] cursor-pointer items-center rounded-ctl px-2 hover:bg-hover", i === cur && "bg-hover")}
+            onMouseEnter={() => setActive(i)}
+            onMouseDown={(e) => { e.preventDefault(); pick(r.id); }}>
             {r.display_name}
           </div>
         ))}

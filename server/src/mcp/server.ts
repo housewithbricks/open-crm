@@ -313,7 +313,7 @@ export function buildMcpServer(actor: Actor) {
     server.registerTool(
       "complete_task",
       { title: "Complete task", description: "Mark a task done, or reopen it with done=false.", inputSchema: { task_id: z.string(), done: z.boolean().optional() }, annotations: { idempotentHint: true } },
-      wrap(async ({ task_id, done }) => updateActivity(actor, task_id, { done: done ?? true })),
+      wrap(async ({ task_id, done }) => updateActivity(actor, task_id, { done: done ?? true }, { taskOnly: true })),
     );
 
     server.registerTool(
@@ -330,7 +330,7 @@ export function buildMcpServer(actor: Actor) {
         },
         annotations: { idempotentHint: true },
       },
-      wrap(async ({ task_id, ...patch }) => updateActivity(actor, task_id, patch)),
+      wrap(async ({ task_id, ...patch }) => updateActivity(actor, task_id, patch, { taskOnly: true })),
     );
   }
 

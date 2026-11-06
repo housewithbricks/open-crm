@@ -290,7 +290,8 @@ function EditFieldModal({ obj, field, onClose }: { obj: ObjectType; field: Field
 
   const save = useMutation({
     mutationFn: () => {
-      const kept = opts.filter((o) => !o.removed && !o.isNew).map(({ value, label, color }) => ({ value, label, color }));
+      // Keep stage kind and win probability: the server replaces the whole option list.
+      const kept = opts.filter((o) => !o.removed && !o.isNew).map(({ removed: _r, isNew: _n, ...c }) => c);
       const added = opts.filter((o) => o.isNew && !o.removed).map((o) => ({ label: o.label, color: o.color }));
       return api(`/objects/${obj.slug}/fields/${field.key}`, {
         method: "PATCH",

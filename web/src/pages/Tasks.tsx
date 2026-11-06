@@ -19,7 +19,7 @@ export function TaskList({ tasks, empty = "No open tasks.", flat }: { tasks: Tas
           <div key={t.id} className="group !items-start">
             <input type="checkbox" className="mt-0.5" checked={!!t.done_at} onChange={() => toggle.mutate(t)} aria-label="Done" />
             <div className="min-w-0 flex-1">
-              <div className={cn("cursor-pointer hover:underline hover:decoration-line-2 hover:underline-offset-[3px]", t.done_at && "text-muted line-through")} onClick={() => setEditing(t)}>{t.title}</div>
+              <button type="button" className={cn("block text-left hover:underline hover:decoration-line-2 hover:underline-offset-[3px]", t.done_at && "text-muted line-through")} onClick={() => setEditing(t)}>{t.title}</button>
               {(t.links.length > 0 || t.actor_type === "agent") && (
                 <div className="mt-1 flex flex-wrap items-center gap-1">
                   <LinkChips links={t.links} />

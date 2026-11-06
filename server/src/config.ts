@@ -7,4 +7,10 @@ export const config = {
   sessionSecret: process.env.SESSION_SECRET,
   publicUrl: process.env.PUBLIC_URL?.replace(/\/$/, ""),
   isProd: process.env.NODE_ENV === "production",
+  /** Reverse proxies in front of the app that append to X-Forwarded-For (Caddy, Railway, Render…). 0 = none. */
+  trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 1),
+  /** Header your platform sets to the real client IP (e.g. fly-client-ip, cf-connecting-ip). Wins over X-Forwarded-For. */
+  clientIpHeader: process.env.CLIENT_IP_HEADER?.toLowerCase(),
+  /** Failed sign-ins from all addresses together within 15 minutes before sign-in pauses for 5 minutes. */
+  loginGlobalMax: Number(process.env.LOGIN_GLOBAL_MAX ?? 100),
 };

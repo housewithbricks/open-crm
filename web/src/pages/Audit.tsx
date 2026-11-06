@@ -17,7 +17,7 @@ export default function Audit() {
   const rows = data?.filter((a) => who === "all" || a.actor_type === who);
   return (
     <div className="max-w-[880px]">
-      <PageHead title="Audit log" desc="Every change, by you or an agent. Undo anything that went wrong.">
+      <PageHead title="Audit log" desc="Every change, by you or an agent. Record, activity and most field and object changes can be undone; type changes and removed options can't.">
         <Segmented value={who} onChange={setWho} options={[{ value: "all", label: "Everyone" }, { value: "agent", label: "Agents" }, { value: "user", label: "You" }]} />
       </PageHead>
       <List>
@@ -31,13 +31,13 @@ export default function Audit() {
               <div className="min-w-0 flex-1">
                 <div>
                   <b className="font-medium"><Who type={a.actor_type} name={a.actor_name} /></b> <span className="text-muted">{d.text}</span>
-                  {openable && <> · <span className={refClass} onClick={() => navigate({ to: "/o/$slug", params: { slug: a.object_slug! }, search: { r: a.target_id! } })}>Open</span></>}
+                  {openable && <> · <button type="button" className={refClass} onClick={() => navigate({ to: "/o/$slug", params: { slug: a.object_slug! }, search: { r: a.target_id! } })}>Open</button></>}
                 </div>
                 {d.diff?.map((line, i) => <div key={i} className="text-xs text-muted">{line}</div>)}
               </div>
               <span className="pt-px text-xs whitespace-nowrap text-muted">{timeAgo(a.created_at)}</span>
               {a.undone_at ? <Pill>Undone</Pill> : a.undoable ? (
-                <Button size="sm" className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100" disabled={undo.isPending} onClick={() => undo.mutate(a.id)}>Undo</Button>
+                <Button size="sm" className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100" disabled={undo.isPending} onClick={() => undo.mutate(a.id)}>Undo</Button>
               ) : <span className="w-[52px]" />}
             </div>
           );

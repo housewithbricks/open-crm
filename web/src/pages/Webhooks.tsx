@@ -40,7 +40,7 @@ export default function Webhooks() {
               <Td className={cn("font-medium", !w.active && "opacity-55")}>{w.url}</Td>
               <Td className="text-muted">{w.events.map((e) => (e === "*" ? "All events" : e)).join(", ")}</Td>
               <Td>{w.last_at ? <span className={w.last_error ? "text-danger" : "text-agent"}>{w.last_error ?? w.last_status} · {timeAgo(w.last_at)}</span> : <span className="text-muted">Never</span>}</Td>
-              <Td>{revealed === w.id ? <code>{w.secret}</code> : <span className={refClass} onClick={() => setRevealed(w.id)}>Reveal</span>}</Td>
+              <Td>{revealed === w.id ? <code>{w.secret}</code> : <button type="button" className={refClass} onClick={() => setRevealed(w.id)}>Reveal</button>}</Td>
               <Td className="text-right">
                 <span className="inline-flex gap-1">
                   <Button size="sm" variant="ghost" onClick={() => test.mutate(w.id)}>Send test</Button>

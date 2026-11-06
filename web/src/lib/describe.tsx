@@ -34,9 +34,19 @@ export function describeAudit(a: AuditEntry, objects: ObjectType[] = []): { text
     }
     case "record.archive": return { text: <>archived {one} <b>{a.before?.name ?? ""}</b></> };
     case "record.restore": return { text: <>restored a {one}</> };
-    case "activity.create": return a.after?.kind === "task" ? { text: <>created task <b>{a.after?.title}</b></> } : { text: <>logged a {a.after?.kind}</> };
-    case "activity.update": return { text: <>changed the linked records on a task</> };
-    case "activity.delete": return { text: <>deleted a {a.before?.kind ?? "note"}</> };
+    case "activity.create": return a.after?.kind === "task" ? { text: <>created task <b>{a.after?.title}</b></> } : { text: <>logged {a.after?.kind === "email" ? "an" : "a"} {a.after?.kind}{a.after?.title ? <>: <b>{a.after.title}</b></> : null}</> };
+    case "activity.update": {
+      const keys = Object.keys(a.after ?? {}).filter((k) => k !== "kind");
+      const names: Record<string, string> = { title: "title", body: "notes", due_at: "due date", done_at: "done", record_ids: "linked records" };
+      const kind = a.after?.kind ?? "task";
+      if (keys.length === 1 && keys[0] === "done_at") return { text: a.after.done_at ? <>completed a {kind}</> : <>reopened a {kind}</> };
+      return {
+        text: <>edited the {keys.map((k) => names[k] ?? k).join(", ")} of a {kind}</>,
+        diff: keys.filter((k) => k === "title").map((k) => `Title: ${a.before?.[k] || "empty"} → ${a.after[k] || "empty"}`),
+      };
+    }
+    case "activity.delete": return { text: <>deleted a {a.before?.kind ?? "note"}{a.before?.title ? <> <b>{a.before.title}</b></> : null}</> };
+    case "activity.restore": return { text: <>restored a {a.after?.kind ?? "note"}{a.after?.title ? <> <b>{a.after.title}</b></> : null}</> };
     case "field.create": return { text: <>added field <b>{a.after?.label}</b> to {objLabel}</> };
     case "field.update": return { text: <>edited a field on {objLabel}</> };
     case "field.unarchive": return { text: <>restored field <b>{a.after?.field}</b> on {objLabel}</> };

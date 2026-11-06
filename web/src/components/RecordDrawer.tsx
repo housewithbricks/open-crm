@@ -118,6 +118,8 @@ function EditableField({ field, detail, onOpen }: { field: FieldDef; detail: Rec
     <>
       <div className="py-[7px] text-muted" title={field.description || undefined}>{field.label}</div>
       <div onClick={() => { if (!editing) { setDraft(value); setEditing(true); } }}
+        role={editing ? undefined : "button"} tabIndex={editing ? undefined : 0} aria-label={editing ? undefined : `Edit ${field.label}`}
+        onKeyDown={(e) => { if (!editing && e.key === "Enter" && e.target === e.currentTarget) { e.preventDefault(); setDraft(value); setEditing(true); } }}
         className={cn("-ml-2 min-h-8 rounded-ctl py-[5px] pl-2 [overflow-wrap:anywhere]",
           editing ? "block" : "flex cursor-text flex-wrap items-center hover:bg-hover", empty && !editing && "text-faint")}>
         {editing ? (
@@ -227,7 +229,7 @@ function Timeline({ recordId, fields }: { recordId: string; fields: FieldDef[] }
                     </>
                   ) : (
                     <div className="text-ink-2">
-                      <b className="font-medium text-ink"><Who type={t.actor_type} name={t.actor_name} /></b> logged a {t.kind}
+                      <b className="font-medium text-ink"><Who type={t.actor_type} name={t.actor_name} /></b> logged {t.kind === "email" ? "an" : "a"} {t.kind}
                       {t.title && <>: <b className="font-medium text-ink">{t.title}</b></>}
                       <span className="ml-1.5 text-xs whitespace-nowrap text-faint">{timeAgo(t.created_at)}</span>
                     </div>
