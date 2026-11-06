@@ -217,5 +217,6 @@ MCP is served over HTTPS by whatever is in front of the container (the platform,
 - Serve over HTTPS. Every option above does, except plain `docker compose up` with `BIND_ADDRESS=0.0.0.0` on a LAN.
 - The compose files publish the app on `127.0.0.1` only. Leave it that way when you use the `https` profile, so nobody can skip Caddy.
 - Set `TRUSTED_PROXY_HOPS` to match your setup (see the table above) so the sign-in limiter sees real client addresses.
+- `LOGIN_GLOBAL_MAX` caps failed sign-ins from all addresses together, so password guessing spread over many addresses gets nowhere. The flip side: anyone who can reach the sign-in page can fail that many times on purpose and pause new sign-ins for 5 minutes, again and again. Browsers that are already signed in and API keys (so your agents) keep working. If that happens, raise `LOGIN_GLOBAL_MAX` (e.g. `1000`; a long random password stays out of reach), or put the app behind a VPN, Cloudflare Access or your proxy's IP allowlist so strangers can't reach it.
 - Give each agent its own API key with only the scopes it needs, and revoke keys you no longer use.
 - Back up Postgres.

@@ -1,7 +1,7 @@
 import { CrmError, type FieldDef, type ObjectType } from "./types.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const isBlank = (v: unknown) => v === null || v === undefined || (typeof v === "string" && v.trim() === "");
 
@@ -102,9 +102,23 @@ const isColor = (c: unknown): c is string =>
 
 type ChoiceInput = string | { value?: string; label: string; color?: string; kind?: string; probability?: number | null };
 
-export function normalizeChoices(input: ChoiceInput[] = []) {
+/** Two options with the same value can't be told apart, so refuse them. */
+export function checkDistinct<T extends { value: string; label: string }>(choices: T[]): T[] {
+  const seen = new Map<string, string>();
+  for (const c of choices) {
+    const other = seen.get(c.value);
+    if (other !== undefined) {
+      throw new CrmError(`Options "${other}" and "${c.label}" would both have the value "${c.value}". Rename one or give it a distinct value.`);
+    }
+    seen.set(c.value, c.label);
+  }
+  return choices;
+}
+
+/** Labels (or {value?, label, …}) → options. Refuses two options with the same value unless allowSame. */
+export function normalizeChoices(input: ChoiceInput[] = [], { allowSame = false } = {}) {
   const palette = ["gray", "blue", "violet", "amber", "orange", "green", "red", "teal", "pink"];
-  return input.map((c, i) => {
+  const out = input.map((c, i) => {
     const label = typeof c === "string" ? c : c.label;
     // A label with no letters or digits (e.g. "!!!") still needs a value.
     const value = (typeof c === "string" ? slugify(c) : c.value || slugify(c.label)) || `option_${i + 1}`;
@@ -124,4 +138,5 @@ export function normalizeChoices(input: ChoiceInput[] = []) {
     }
     return out;
   });
+  return allowSame ? out : checkDistinct(out);
 }

@@ -687,6 +687,151 @@ describe("review fixes", () => {
   });
 });
 
+describe("round 2 fixes", () => {
+  const fieldsOf = async (slug: string) =>
+    ((await rest("/schema")).data.objects.find((o: any) => o.slug === slug)?.fields ?? []).map((f: any) => f.key);
+
+  it("1: undoes an archive made through the plural object label", async () => {
+    await rest("/objects", { body: { label: "Probe Thing", fields: [{ label: "Colour", type: "text" }] } });
+    assert.equal((await rest(`/objects/${encodeURIComponent("Probe Things")}/fields/colour`, { method: "DELETE" })).status, 200);
+    assert.ok(!(await fieldsOf("probe_things")).includes("colour"));
+    const fieldEntry = ((await rest("/audit?limit=20")).data as any[]).find((a) => a.action === "schema.archive_field");
+    assert.equal((await rest(`/audit/${fieldEntry.id}/undo`, { body: {} })).status, 200);
+    assert.ok((await fieldsOf("probe_things")).includes("colour"), "field restored");
+
+    assert.equal((await rest(`/objects/${encodeURIComponent("Probe Things")}`, { method: "DELETE" })).status, 200);
+    const objEntry = ((await rest("/audit?limit=20")).data as any[]).find((a) => a.action === "schema.archive_object");
+    assert.equal((await rest(`/audit/${objEntry.id}/undo`, { body: {} })).status, 200);
+    assert.ok((await fieldsOf("probe_things")).includes("name"), "object restored");
+
+    // An undo that would change nothing is refused, not marked done.
+    await rest("/objects/probe_things/fields", { body: { label: "Temp", type: "text" } });
+    await rest("/objects/probe_things/fields/temp", { method: "DELETE" });
+    const gone = ((await rest("/audit?limit=20")).data as any[]).find((a) => a.action === "schema.archive_field" && !a.undone_at);
+    await db`delete from field_defs where key = 'temp'`;
+    assert.equal((await rest(`/audit/${gone.id}/undo`, { body: {} })).status, 404);
+    assert.equal((await auditFor(gone.target_id, "schema.archive_field")).undone_at, null);
+  });
+
+  it("2: write-only keys get {id, action} back, never record contents", async () => {
+    const w = (await rest("/keys", { body: { name: "Writer", scopes: ["write"] } })).data.key;
+    const rec = (await rest("/objects/people/records", { body: { name: "Secret Sam", title: "Spy", email: "sam@spy.io" } })).data;
+    const created = await rest("/objects/people/records", { body: { name: "W1" }, bearer: w });
+    assert.deepEqual(Object.keys(created.data).sort(), ["action", "id"]);
+    const patched = await rest(`/records/${rec.id}`, { method: "PATCH", body: {}, bearer: w });
+    assert.deepEqual(patched.data, { id: rec.id, action: "updated" });
+    const up = await mcp("upsert_record", { object: "people", match_on: "email", data: { email: "sam@spy.io" } }, w);
+    assert.deepEqual(up.data, { id: rec.id, action: "updated" });
+    const upd = await mcp("update_record", { id: rec.id, data: {} }, w);
+    assert.deepEqual(upd.data, { id: rec.id, action: "updated" });
+    const mc = await mcp("create_record", { object: "people", data: { name: "W2" } }, w);
+    assert.deepEqual(Object.keys(mc.data).sort(), ["action", "id"]);
+    await rest(`/records/${rec.id}`, { method: "DELETE", bearer: w });
+    const restored = await rest(`/records/${rec.id}/restore`, { body: {}, bearer: w });
+    assert.deepEqual(restored.data, { id: rec.id, action: "restored" });
+    // Keys that can read still get the record.
+    assert.equal((await rest(`/records/${rec.id}`, { method: "PATCH", body: {}, bearer: key })).data.data.title, "Spy");
+  });
+
+  it("3: re-creating an archived object's name is a 409 with a way out", async () => {
+    await rest("/objects", { body: { label: "Ghost" } });
+    await rest("/objects/ghosts", { method: "DELETE" });
+    const r = await rest("/objects", { body: { label: "Ghost" } });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /An archived object uses this name. Restore it from the audit log or pick another name./);
+    const m = await mcp("create_object_type", { label: "Ghost" });
+    assert.match(m.error!, /An archived object uses this name/);
+  });
+
+  it("4: blocks IPv4-mapped and NAT64 forms of link-local webhook targets", async () => {
+    for (const url of ["http://[::ffff:169.254.169.254]/", "http://[::ffff:a9fe:a9fe]/", "http://[64:ff9b::169.254.169.254]/", "http://[64:ff9b::a9fe:a9fe]/", "http://[::ffff:100.100.100.200]/"]) {
+      const r = await rest("/webhooks", { body: { url } });
+      assert.equal(r.status, 400, url);
+    }
+  });
+
+  it("5: malformed query parameters and ids are 400s", async () => {
+    const dashes = "-".repeat(36);
+    for (const path of ["/objects/people/records?limit=abc", "/objects/people/records?offset=-1", "/objects/people/records?limit=1.5", "/audit?limit=x",
+                        `/records/${dashes}`, `/records/${dashes}/timeline`, `/tasks?record_id=${dashes}`]) {
+      assert.equal((await rest(path)).status, 400, path);
+    }
+    assert.equal((await rest(`/records/${dashes}`, { method: "PATCH", body: { name: "x" } })).status, 400);
+    assert.equal((await rest(`/activities/${dashes}`, { method: "PATCH", body: { title: "x" } })).status, 400);
+    assert.equal((await rest(`/audit/abc/undo`, { body: {} })).status, 400);
+    assert.equal((await rest("/objects/people/records?limit=100000")).status, 200, "a large limit is capped, not refused");
+  });
+
+  it("6: undo sees a write that lands while it runs", async () => {
+    const rec = (await rest("/objects/people/records", { body: { name: "Racer", title: "A" } })).data;
+    await rest(`/records/${rec.id}`, { method: "PATCH", body: { title: "B" } });
+    const entry = await auditFor(rec.id, "record.update");
+    let undo: Promise<{ status: number }> | undefined;
+    await db.begin(async (tx) => {
+      await tx`select 1 from records where id = ${rec.id} for update`;
+      undo = rest(`/audit/${entry.id}/undo`, { body: {} });
+      await new Promise((r) => setTimeout(r, 400));
+      await tx`update records set data = jsonb_set(data, '{title}', '"C"') where id = ${rec.id}`;
+    });
+    assert.equal((await undo!).status, 409);
+    assert.equal((await rest(`/records/${rec.id}`)).data.record.data.title, "C");
+    assert.equal((await auditFor(rec.id, "record.update")).undone_at, null);
+  });
+
+  it("7: refuses select options whose values collide", async () => {
+    const a = await rest("/objects/people/fields", { body: { label: "Where", type: "select", choices: ["On-site", "On site"] } });
+    assert.equal(a.status, 400);
+    assert.match(a.data.error, /on_site/);
+    const b = await rest("/objects/people/fields", { body: { label: "Where2", type: "select", choices: [{ value: "x", label: "X" }, { value: "x", label: "Y" }] } });
+    assert.equal(b.status, 400);
+    assert.equal((await rest("/objects/people/fields", { body: { label: "Where3", type: "select", choices: ["On-site"] } })).status, 200);
+    const c = await rest("/objects/people/fields/where3", { method: "PATCH", body: { add_choices: ["On site"] } });
+    assert.equal(c.status, 400);
+    assert.equal((await rest("/objects/people/fields/where3", { method: "PATCH", body: { add_choices: ["on-site"] } })).status, 200, "re-adding the same option is a no-op");
+  });
+
+  it("8: create_object_type is all or nothing", async () => {
+    const bad = await mcp("create_object_type", { label: "Atom", fields: [{ label: "Owner", type: "relation", target: "nowhere" }] });
+    assert.match(bad.error!, /nowhere/);
+    assert.ok(!(await mcp("describe_schema")).data.some((o: any) => o.object === "atoms"));
+    const good = await mcp("create_object_type", { label: "Atom", fields: [{ label: "Owner", type: "relation", target: "people" }, { label: "Parent", type: "relation", target: "atoms" }] });
+    assert.deepEqual(good.data.fields.map((f: any) => f.key), ["name", "owner", "parent"]);
+  });
+
+  it("9: a failed import row leaves nothing behind", async () => {
+    const r = await rest("/objects/people/import", {
+      body: { add_missing_options: true, rows: [{ name: "Bad Row", email: "not-an-email", company: "Orphan Co", status: "Phantom" }] },
+    });
+    assert.equal(r.data.failed, 1);
+    assert.equal((await rest("/search?q=Orphan%20Co")).data.length, 0, "no related company");
+    const status = (await rest("/schema")).data.objects.find((o: any) => o.slug === "people").fields.find((f: any) => f.key === "status");
+    assert.ok(!status.options.choices.some((c: any) => c.label === "Phantom"), "no new option");
+    // A later good row with the same company name still creates it.
+    const ok = await rest("/objects/people/import", { body: { rows: [{ name: "Good Row", company: "Orphan Co" }, { name: "Good Row 2", company: "Orphan Co" }] } });
+    assert.equal(ok.data.created, 2);
+    assert.equal((await rest("/search?q=Orphan%20Co")).data.filter((x: any) => x.object === "companies").length, 1);
+  });
+
+  it("10: undoes object edits, with conflict detection", async () => {
+    await rest("/objects/probe_things", { method: "PATCH", body: { label: "Gizmo", color: "teal", description: "d1" } });
+    const entry = ((await rest("/audit?limit=20")).data as any[]).find((a) => a.action === "object.update");
+    assert.ok(entry.undoable);
+    assert.equal((await rest(`/audit/${entry.id}/undo`, { body: {} })).status, 200);
+    let o = (await rest("/schema")).data.objects.find((x: any) => x.slug === "probe_things");
+    assert.deepEqual([o.label, o.description], ["Probe Thing", ""]);
+
+    await rest("/objects/probe_things", { method: "PATCH", body: { label: "Gizmo" } });
+    const e2 = ((await rest("/audit?limit=20")).data as any[]).find((a) => a.action === "object.update" && a.undoable);
+    await rest("/objects/probe_things", { method: "PATCH", body: { label: "Widget" } });
+    const conflict = await rest(`/audit/${e2.id}/undo`, { body: {} });
+    assert.equal(conflict.status, 409);
+    assert.deepEqual(conflict.data.details.conflict, ["label"]);
+    assert.equal((await rest(`/audit/${e2.id}/undo`, { body: { force: true } })).status, 200);
+    o = (await rest("/schema")).data.objects.find((x: any) => x.slug === "probe_things");
+    assert.equal(o.label, "Probe Thing");
+  });
+});
+
 describe("sessions", () => {
   it("signs out everywhere", async () => {
     const a = (await signIn()).cookie;

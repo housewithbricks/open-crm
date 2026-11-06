@@ -8,7 +8,7 @@ A small, self-hosted CRM where **you and your AI agents are equal clients**. It 
 
 - **Schema stored as data.** Objects (People, Companies, Deals, …) and their fields live in the database. Add a field or a whole object, from the UI or through MCP, and every table, form and board picks it up instantly.
 - **MCP built in** at `/mcp` (Streamable HTTP). Scoped API keys (`read`, `write`, `schema`), one per agent.
-- **Attributed and reversible.** Every write shows up in the record's timeline and the audit log with who made it. From the audit log you can **undo** record creates, edits, archives and restores; note and task creates, edits and deletes; new and edited fields (including option labels, colors, order and stage settings); new objects; and archived fields and objects. Undo warns you if the thing changed again since. Field type changes and removed options can't be undone.
+- **Attributed and reversible.** Every write shows up in the record's timeline and the audit log with who made it. From the audit log you can **undo** record creates, edits, archives and restores; note and task creates, edits and deletes; new and edited fields (including option labels, colors, order and stage settings); new and edited objects (name, description, icon, color and primary field); and archived fields and objects. Undoing an edit warns you if those values changed again since. Field type changes and removed options can't be undone.
 - **Guardrails for agents.** Agents can add things freely. Destructive schema changes (archive or retype a field, archive an object, remove options) go to an **Approvals** inbox. A type change converts every stored value or, if some can't be converted, is refused with a count and changes nothing.
 - **Views, filters, import and export.** Save filtered views (agents can too), import CSVs with column mapping and dedupe, and export any object.
 - **Webhooks.** Signed HTTP events (`record.created`, `record.updated`, `schema.changed`, …) so automations and agents can react.
@@ -49,7 +49,7 @@ Create a key in **Settings → API keys & MCP**, then point any MCP client at `h
 | OpenAI API | `{"type":"mcp","server_url":"https://YOUR-HOST/mcp","headers":{"Authorization":"Bearer ocrm_…"}}` |
 | Anything else | Streamable HTTP + bearer header, `?key=` for URL-only clients, or `npx mcp-remote` for stdio-only clients |
 
-Exact config files for each client are in **[docs/connecting-agents.md](docs/connecting-agents.md)**.
+Exact config files for each client are in **[docs/connecting-agents.md](docs/connecting-agents.md)**. Scripts and integrations can use the same keys over JSON: see the **[REST API reference](docs/rest-api.md)**.
 
 ### MCP surface
 

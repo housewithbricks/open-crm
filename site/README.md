@@ -1,10 +1,10 @@
 # Open CRM landing page
 
-A static page: `index.html`, `favicon.svg`, `og.png` and `assets/app.png`. It has no build step. The CSS and the small copy-button script are inline, and fonts load from Google Fonts.
+A static page: `index.html`, `favicon.svg`, `og.png` and the screenshots in `assets/shots/`. It has no build step. The CSS and the small copy-button script are inline, and fonts load from Google Fonts.
 
 ## Run it in Docker
 
-The `Dockerfile` serves the files with `nginx:1.27-alpine`. It listens on `$PORT` (default `8080`), gzips text, caches `/assets/` for a year, sends `no-cache` for `index.html`, and answers `GET /health` with `200 ok`.
+The `Dockerfile` serves the files with `nginx:1.27-alpine`. It listens on `$PORT` (default `8080`), gzips text, caches `/assets/` for a day, sends `no-cache` for `index.html`, and answers `GET /health` with `200 ok`.
 
 ```bash
 cd site
@@ -26,7 +26,7 @@ You can also use Render's free **Static Site** type with no Docker: set Root Dir
 ## Files
 
 - `index.html`: the page
-- `assets/app.png`: product screenshot (1440×900 at 2x, light theme, default indigo accent)
+- `assets/shots/*.webp`: product screenshots, a `-light` and a `-dark` version of each, picked by `prefers-color-scheme`
 - `og.png`: 1200×630 social card
 - `Dockerfile`, `nginx.conf.template`, `.dockerignore`: the container
 - `screenshots/`: reference renders of the page (excluded from the image)

@@ -12,6 +12,7 @@ import {
   searchAll,
   updateRecord,
   upsertRecord,
+  writeReply,
 } from "../core/records.js";
 import { importRows } from "../core/importer.js";
 import { dashboard } from "../core/dashboard.js";
@@ -196,19 +197,28 @@ export function buildMcpServer(actor: Actor) {
     server.registerTool(
       "create_record",
       { title: "Create record", description: "Create a record. Prefer upsert_record when a unique field (email, domain) is known.", inputSchema: { object: z.string(), data: dataSchema } },
-      wrap(async ({ object, data }) => createRecord(actor, object, data)),
+      wrap(async ({ object, data }) => {
+        const rec = await createRecord(actor, object, data);
+        return writeReply(actor, "created", rec.id, rec);
+      }),
     );
 
     server.registerTool(
       "update_record",
       { title: "Update record", description: "Update some fields of a record. Set a field to null to clear it.", inputSchema: { id: idSchema, data: dataSchema }, annotations: { idempotentHint: true } },
-      wrap(async ({ id, data }) => updateRecord(actor, id, data)),
+      wrap(async ({ id, data }) => {
+        const rec = await updateRecord(actor, id, data);
+        return writeReply(actor, "updated", rec.id, rec);
+      }),
     );
 
     server.registerTool(
       "upsert_record",
-      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema }, annotations: { idempotentHint: true } },
-      wrap(async ({ object, match_on, data }) => upsertRecord(actor, object, match_on, data)),
+      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}, or {id, action} for a key without the read scope.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema }, annotations: { idempotentHint: true } },
+      wrap(async ({ object, match_on, data }) => {
+        const r = await upsertRecord(actor, object, match_on, data);
+        return writeReply(actor, r.action, r.record.id, r);
+      }),
     );
 
     server.registerTool(

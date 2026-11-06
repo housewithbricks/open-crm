@@ -319,12 +319,22 @@ function BoardView({ obj, cfg }: { obj: ObjectType; cfg: ViewConfig }) {
               {c.records.map((r) => (
                 <div key={r.id} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", r.id)} onClick={() => openRecord(r.id)}
                   role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); openRecord(r.id); } }}
-                  className="mb-2 cursor-grab rounded-lg border border-line bg-panel px-3 py-2.5 transition-colors hover:border-line-2 hover:shadow-[0_1px_3px_rgba(0,0,0,.05)] focus-visible:outline-2 focus-visible:outline-accent">
+                  className="group mb-2 cursor-grab rounded-lg border border-line bg-panel px-3 py-2.5 transition-colors hover:border-line-2 hover:shadow-[0_1px_3px_rgba(0,0,0,.05)] focus-visible:outline-2 focus-visible:outline-accent">
                   <b className="mb-1 block font-medium">{r.display_name || "(untitled)"}</b>
                   <div className="flex justify-between gap-2 text-xs text-muted">
                     <span>{subField && r.data[subField.key] ? data?.refs[r.data[subField.key]]?.display_name : ""}</span>
                     <span className="text-ink-2 tabular-nums">{amountField && r.data[amountField.key] != null && fmtMoney(r.data[amountField.key], amountField.options.currency)}</span>
                   </div>
+                  {/* Drag doesn't work on touch or from the keyboard; this does. */}
+                  <select aria-label={`Move ${r.display_name || "record"} to…`} value="" disabled={move.isPending}
+                    className="mt-1.5 hidden h-6 max-w-full rounded border border-line bg-panel px-1 text-xs text-muted group-focus-within:block [@media(hover:none)]:block"
+                    onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}
+                    onChange={(e) => move.mutate({ id: r.id, value: e.target.value === "" ? null : e.target.value })}>
+                    <option value="" disabled>Move to…</option>
+                    {columns.filter((o) => !o.unknown && o.value !== c.value).map((o) => (
+                      <option key={o.value ?? "_none"} value={o.value ?? ""}>{o.label}</option>
+                    ))}
+                  </select>
                 </div>
               ))}
               {c.records.length < c.count && (

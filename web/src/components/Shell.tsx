@@ -21,6 +21,46 @@ const Section = ({ children, action }: { children: ReactNode; action?: ReactNode
   <div className="flex items-center justify-between px-2 pt-4 pb-1 text-xs text-muted max-md:hidden">{children}{action}</div>
 );
 
+const SETTINGS = [
+  ["/settings/objects", "Objects & fields"],
+  ["/settings/appearance", "Appearance"],
+  ["/settings/keys", "API keys & MCP"],
+  ["/settings/webhooks", "Webhooks"],
+  ["/settings/audit", "Audit log"],
+] as const;
+
+async function signOut() {
+  await api("/logout", { body: {} });
+  invalidateAll();
+}
+
+/** Small screens: settings links and Sign out in one menu, pinned to the end of the scrolling top bar. */
+function SettingsMenu() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [open]);
+  return (
+    <div className="sticky right-0 bg-sidebar pl-1 md:hidden">
+      <button type="button" className={navItem} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>Settings</button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div role="menu" className="fixed top-12 right-2 z-50 flex w-56 flex-col gap-px rounded-ctl border border-line bg-panel p-1.5 shadow-lg" onClick={() => setOpen(false)}>
+            {SETTINGS.map(([to, label], i) => (
+              <Link key={to} to={to} role="menuitem" autoFocus={i === 0} className={navItem} activeProps={navActive}>{label}</Link>
+            ))}
+            <button type="button" role="menuitem" className={cn(navItem, "text-muted")} onClick={signOut}>Sign out</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Signed-in app frame: sidebar, page outlet, record drawer, ⌘K search. */
 export default function Shell({ children }: { children: ReactNode }) {
   useAppearance();
@@ -44,7 +84,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="grid h-full grid-cols-[224px_minmax(0,1fr)] max-md:grid-cols-1 max-md:grid-rows-[auto_1fr]">
+    <div className="grid h-full grid-cols-[224px_minmax(0,1fr)] max-md:grid-cols-[minmax(0,1fr)] max-md:grid-rows-[auto_1fr]">
       <nav className="flex flex-col gap-px overflow-y-auto border-r border-line bg-sidebar px-2 py-3 max-md:flex-row max-md:items-center max-md:border-r-0 max-md:border-b max-md:p-1.5 max-md:[&>*]:flex-none">
         <div className="flex items-center gap-2 px-2 pt-1 pb-3 text-sm font-semibold max-md:p-1.5"><Mark size={20} /><span className="max-md:hidden">Open CRM</span></div>
         <button type="button" className={cn(navItem, "max-md:hidden")} onClick={() => setCmdk(true)}>Search <kbd className="font-sans text-[11px] text-faint">⌘K</kbd></button>
@@ -64,13 +104,12 @@ export default function Shell({ children }: { children: ReactNode }) {
           </NavItem>
         ))}
         <Section>Settings</Section>
-        <NavItem to="/settings/objects">Objects &amp; fields</NavItem>
-        <NavItem to="/settings/appearance">Appearance</NavItem>
-        <NavItem to="/settings/keys">API keys &amp; MCP</NavItem>
-        <NavItem to="/settings/webhooks">Webhooks</NavItem>
-        <NavItem to="/settings/audit">Audit log</NavItem>
+        <div className="flex flex-col gap-px max-md:hidden">
+          {SETTINGS.map(([to, label]) => <NavItem key={to} to={to}>{label}</NavItem>)}
+        </div>
         <div className="flex-1" />
-        <button type="button" className={cn(navItem, "text-muted")} onClick={async () => { await api("/logout", { body: {} }); invalidateAll(); }}>Sign out</button>
+        <button type="button" className={cn(navItem, "text-muted max-md:hidden")} onClick={signOut}>Sign out</button>
+        <SettingsMenu />
       </nav>
       <main className="h-full min-w-0 overflow-auto">
         <div className="max-w-[1280px] px-7 pt-5 pb-12 max-md:p-4">{children}</div>

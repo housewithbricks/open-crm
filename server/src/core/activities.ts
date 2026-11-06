@@ -1,5 +1,6 @@
 import { sql, type Db } from "../db.js";
 import { audit } from "./audit.js";
+import { UUID_RE } from "./fields.js";
 import { CrmError, notFound, requireScope, type Actor } from "./types.js";
 
 export const ACTIVITY_KINDS = ["note", "call", "email", "meeting", "task"] as const;
@@ -33,7 +34,7 @@ export type ActivityLink = { id: string; object: string; display_name: string };
 async function resolveLinks(db: Db, ids: (string | null | undefined)[]) {
   const unique = [...new Set(ids.filter((x): x is string => !!x))];
   if (!unique.length) return [];
-  const bad = unique.filter((id) => !/^[0-9a-f-]{36}$/i.test(id));
+  const bad = unique.filter((id) => !UUID_RE.test(id));
   if (bad.length) throw new CrmError(`Not record ids: ${bad.join(", ")}`);
   const found = await db<{ id: string }[]>`select id from records where id = any(${unique}::uuid[]) and deleted_at is null`;
   const missing = unique.filter((id) => !found.some((f) => f.id === id));
@@ -114,7 +115,7 @@ export async function updateActivity(
   opts: { taskOnly?: boolean } = {},
 ) {
   requireScope(actor, "write");
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError(`"${id}" is not an activity id`);
+  if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
   await sql.begin(async (tx) => {
     const [cur] = await tx<Activity[]>`select * from activities where id = ${id} and deleted_at is null for update`;
     if (!cur) throw notFound(opts.taskOnly ? "Task" : "Activity");
@@ -144,7 +145,7 @@ export async function updateActivity(
 /** Soft delete: the activity disappears everywhere but can be brought back from the audit log. */
 export async function deleteActivity(actor: Actor, id: string) {
   requireScope(actor, "write");
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError(`"${id}" is not an activity id`);
+  if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
   await sql.begin(async (tx) => {
     const [row] = await tx<Activity[]>`update activities set deleted_at = now() where id = ${id} and deleted_at is null returning id`;
     if (!row) throw notFound("Activity");
@@ -187,6 +188,7 @@ export async function restoreActivity(actor: Actor, id: string) {
 }
 
 export async function listTasks(opts: { open?: boolean; limit?: number; record_id?: string } = {}) {
+  if (opts.record_id && !UUID_RE.test(opts.record_id)) throw new CrmError(`"${opts.record_id}" is not a record id`);
   const rows = await sql<Activity[]>`select a.* from activities a
     where a.kind = 'task' and a.deleted_at is null ${opts.open !== false ? sql`and a.done_at is null` : sql``}
     ${opts.record_id ? sql`and exists (select 1 from activity_links l where l.activity_id = a.id and l.record_id = ${opts.record_id})` : sql``}
@@ -197,6 +199,7 @@ export async function listTasks(opts: { open?: boolean; limit?: number; record_i
 
 /** Notes, tasks and field changes for one record, newest first. */
 export async function timeline(recordId: string, limit = 100) {
+  if (!UUID_RE.test(recordId)) throw new CrmError(`"${recordId}" is not a record id`);
   const rows = await sql`select 'activity' as type, a.* from activities a
     where a.deleted_at is null and exists (select 1 from activity_links l where l.activity_id = a.id and l.record_id = ${recordId})
     order by a.created_at desc limit ${limit}`;

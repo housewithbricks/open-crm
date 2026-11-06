@@ -62,16 +62,43 @@ export function emit(payload: EventPayload) {
   })();
 }
 
+/** An IPv6 address as 8 numbers. Handles "::" and a trailing dotted IPv4 part. */
+function hextets(a: string) {
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  if (v4) {
+    const [b0, b1, b2, b3] = v4.slice(1).map(Number);
+    a = a.slice(0, v4.index) + ((b0 << 8) | b1).toString(16) + ":" + ((b2 << 8) | b3).toString(16);
+  }
+  const [head, tail] = a.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const parts = tail === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
+  return parts.map((x) => parseInt(x, 16));
+}
+
+/**
+ * The IPv4 address inside an IPv4-mapped (::ffff:a.b.c.d, which the URL parser writes as
+ * ::ffff:a9fe:a9fe) or NAT64 (64:ff9b::/96) IPv6 address, which reach that IPv4 address.
+ */
+function embeddedV4(a: string) {
+  const h = hextets(a);
+  const mapped = h.slice(0, 5).every((x) => x === 0) && h[5] === 0xffff;
+  const nat64 = h[0] === 0x64 && h[1] === 0xff9b && h.slice(2, 6).every((x) => x === 0);
+  return mapped || nat64 ? [h[6] >> 8, h[6] & 255, h[7] >> 8, h[7] & 255].join(".") : null;
+}
+
 /**
  * Link-local addresses (169.254.0.0/16, fe80::/10), which include the cloud metadata service,
- * and the other well-known metadata addresses. Localhost and private ranges stay allowed:
- * self-hosters point webhooks at their own local services. WEBHOOK_ALLOW_PRIVATE=1 allows all.
+ * and the other well-known metadata addresses, also when written as IPv6. Localhost and private
+ * ranges stay allowed: self-hosters point webhooks at their own local services.
+ * WEBHOOK_ALLOW_PRIVATE=1 allows all.
  */
 export function isBlockedAddress(ip: string) {
   if (process.env.WEBHOOK_ALLOW_PRIVATE === "1") return false;
-  const a = ip.toLowerCase().replace(/^\[|\]$/g, "").replace(/^::ffff:(?=\d+\.)/, ""); // IPv4-mapped IPv6
+  let a = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  if (isIP(a) === 6) a = embeddedV4(a) ?? a;
   if (isIP(a) === 4) return a.startsWith("169.254.") || a === "100.100.100.200";
-  if (isIP(a) === 6) return /^fe[89ab][0-9a-f]:/.test(a) || a === "fd00:ec2::254";
+  if (isIP(a) === 6) return /^fe[89ab][0-9a-f]:/.test(a) || hextets(a).join(":") === hextets("fd00:ec2::254").join(":");
   return a === "metadata.google.internal" || a === "metadata";
 }
 

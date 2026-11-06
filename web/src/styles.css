@@ -1,6 +1,12 @@
 /* Only scan the web app's own source for classes, so the client and server builds generate the same CSS. */
 @import "tailwindcss" source(".");
 
+/* Fonts are bundled with the app (no third-party requests). */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+
 /* Dark mode follows the data-theme attribute set from Settings → Appearance (or the OS). */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 

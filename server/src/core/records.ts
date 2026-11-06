@@ -1,6 +1,6 @@
 import { json, sql, type Db } from "../db.js";
 import { audit } from "./audit.js";
-import { coerceValue, validateData } from "./fields.js";
+import { coerceValue, UUID_RE, validateData } from "./fields.js";
 import { getField, getObject, loadSchema } from "./schema.js";
 import { CrmError, notFound, requireScope, type Actor, type FieldDef, type ObjectType } from "./types.js";
 
@@ -233,6 +233,7 @@ export async function resolveRefs(obj: ObjectType, records: CrmRecord[]): Promis
 }
 
 async function fetchRow(id: string) {
+  checkId(id);
   const [row] = await sql`select r.*, o.slug from records r join object_types o on o.id = r.object_type_id
                           where r.id = ${id} and r.deleted_at is null`;
   if (!row) throw notFound(`Record ${id}`);
@@ -240,8 +241,19 @@ async function fetchRow(id: string) {
   return { obj, rec: toOut(obj, row) };
 }
 
+export function checkId(id: string) {
+  if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not a record id`);
+}
+
+/**
+ * What a write returns. A key without the read scope only learns the id and what happened,
+ * never the stored record (which can hold fields it didn't send).
+ */
+export function writeReply<T>(actor: Actor, action: "created" | "updated" | "restored", id: string, full: T) {
+  return actor.scopes.includes("read") ? full : { id, action };
+}
+
 export async function getRecord(id: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError(`"${id}" is not a record id`);
   const { obj, rec } = await fetchRow(id);
   return { record: rec, refs: await resolveRefs(obj, [rec]), related: await backlinks(obj, id) };
 }
@@ -301,7 +313,7 @@ const displayName = (obj: ObjectType, data: Record<string, unknown>) => String(d
 const stripNulls = (d: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(d).filter(([, v]) => v !== null && v !== undefined && !(Array.isArray(v) && !v.length)));
 
-async function insertRecord(db: Db, actor: Actor, obj: ObjectType, input: Record<string, unknown>) {
+export async function insertRecord(db: Db, actor: Actor, obj: ObjectType, input: Record<string, unknown>) {
   const data = stripNulls(validateData(obj, input ?? {}, "create"));
   await lockUnique(db, obj, data);
   await checkIntegrity(db, obj, data);
@@ -315,12 +327,13 @@ async function insertRecord(db: Db, actor: Actor, obj: ObjectType, input: Record
  * Read-merge-write under a row lock, so two concurrent edits of different fields both land.
  * The audit entry is written in the same transaction.
  */
-async function patchRecord(db: Db, actor: Actor, id: string, patch: Record<string, unknown>) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError(`"${id}" is not a record id`);
+/** obj overrides the cached schema (the importer passes one with options added in its transaction). */
+async function patchRecord(db: Db, actor: Actor, id: string, patch: Record<string, unknown>, objOverride?: ObjectType) {
+  checkId(id);
   const [cur] = await db`select r.*, o.slug from records r join object_types o on o.id = r.object_type_id
                          where r.id = ${id} and r.deleted_at is null for update of r`;
   if (!cur) throw notFound(`Record ${id}`);
-  const obj = await getObject(cur.slug);
+  const obj = objOverride ?? (await getObject(cur.slug));
   const rec = toOut(obj, cur);
   const clean = validateData(obj, patch ?? {}, "update");
   const next = stripNulls({ ...rec.data, ...clean });
@@ -352,21 +365,36 @@ export async function updateRecord(actor: Actor, id: string, patch: Record<strin
 export async function upsertRecord(actor: Actor, slug: string, matchOn: string, input: Record<string, unknown>) {
   requireScope(actor, "write");
   const obj = await getObject(slug);
+  return sql.begin((tx) => upsertIn(tx, actor, obj, matchOn, input));
+}
+
+/** upsertRecord inside the caller's transaction. */
+export async function upsertIn(db: Db, actor: Actor, obj: ObjectType, matchOn: string, input: Record<string, unknown>) {
   const f = getField(obj, matchOn);
   const v = coerceValue(f, input[matchOn]);
   if (v === null) throw new CrmError(`upsert needs a value for ${matchOn}`);
-  return sql.begin(async (tx) => {
-    // Lock the match value even when the field isn't marked unique, so two concurrent upserts
-    // of the same value can't both decide to create.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`unique:${obj.id}:${f.key}:${String(v).toLowerCase()}`}, 0))`;
-    const [hit] = await tx`select id from records where object_type_id = ${obj.id} and deleted_at is null
-      and lower(data->>${f.key}) = lower(${String(v)}) order by created_at limit 1`;
-    if (hit) {
-      const { [matchOn]: _, ...rest } = input; // keep the stored match value as-is
-      return { action: "updated" as const, record: await patchRecord(tx, actor, hit.id, rest) };
-    }
-    return { action: "created" as const, record: await insertRecord(tx, actor, obj, input) };
-  });
+  // Lock the match value even when the field isn't marked unique, so two concurrent upserts
+  // of the same value can't both decide to create.
+  await db`select pg_advisory_xact_lock(hashtextextended(${`unique:${obj.id}:${f.key}:${String(v).toLowerCase()}`}, 0))`;
+  const [hit] = await db`select id from records where object_type_id = ${obj.id} and deleted_at is null
+    and lower(data->>${f.key}) = lower(${String(v)}) order by created_at limit 1`;
+  if (hit) {
+    const { [matchOn]: _, ...rest } = input; // keep the stored match value as-is
+    return { action: "updated" as const, record: await patchRecord(db, actor, hit.id, rest, obj) };
+  }
+  return { action: "created" as const, record: await insertRecord(db, actor, obj, input) };
+}
+
+/** Undo of a record edit: refuses if an edited field changed since, unless force. Caller holds the transaction. */
+export async function revertRecordUpdate(db: Db, actor: Actor, id: string, before: Record<string, unknown>, after: Record<string, unknown>, force: boolean) {
+  requireScope(actor, "write");
+  const [cur] = await db`select data from records where id = ${id} and deleted_at is null for update`;
+  if (!cur) throw notFound(`Record ${id}`);
+  const drifted = Object.keys(after).filter((k) => JSON.stringify(cur.data[k] ?? null) !== JSON.stringify(after[k] ?? null));
+  if (drifted.length && !force) {
+    throw new CrmError(`These fields changed again since this edit: ${drifted.join(", ")}. Undo anyway to overwrite them.`, 409, { conflict: drifted });
+  }
+  await patchRecord(db, actor, id, before);
 }
 
 export async function archiveRecord(actor: Actor, id: string) {
@@ -382,7 +410,7 @@ export async function archiveRecord(actor: Actor, id: string) {
 /** Bring back an archived record. Refused if another live record took one of its unique values meanwhile. */
 export async function restoreRecord(actor: Actor, id: string) {
   requireScope(actor, "write");
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError(`"${id}" is not a record id`);
+  checkId(id);
   await sql.begin(async (tx) => {
     const [row] = await tx`select r.id, r.data, o.slug from records r join object_types o on o.id = r.object_type_id
       where r.id = ${id} and r.deleted_at is not null for update of r`;

@@ -1,7 +1,7 @@
 import { json, sql, type Db } from "../db.js";
 import { isColor, OBJECT_COLORS } from "./settings.js";
 import { audit } from "./audit.js";
-import { coerceValue, normalizeChoices, slugify } from "./fields.js";
+import { checkDistinct, coerceValue, normalizeChoices, slugify } from "./fields.js";
 import {
   CrmError,
   FIELD_TYPES,
@@ -77,33 +77,50 @@ export async function createObjectType(actor: Actor, input: NewObject) {
   const labelPlural = input.label_plural || (input.label.endsWith("s") ? input.label : input.label + "s");
   const slug = slugify(input.slug || labelPlural);
   if (!slug) throw new CrmError("Object needs a label");
-  if ((await loadSchema()).some((o) => o.slug === slug)) throw new CrmError(`Object "${slug}" already exists`, 409);
+  const [taken] = await sql<{ archived: boolean }[]>`select archived_at is not null as archived from object_types where slug = ${slug}`;
+  if (taken?.archived) throw new CrmError("An archived object uses this name. Restore it from the audit log or pick another name.", 409);
+  if (taken) throw new CrmError(`Object "${slug}" already exists`, 409);
+  if (input.color && !isColor(input.color)) throw new CrmError(`color must be a hex color like #0ea5e9 or one of ${OBJECT_COLORS.join(", ")}`);
+
+  // Check every field before writing anything, so a bad definition leaves nothing behind.
+  const fields = [...(input.fields ?? [])];
+  if (!fields.some((f) => (f.key || slugify(f.label)) === "name")) fields.unshift({ key: "name", label: "Name", type: "text", required: true });
+  const self = [slug, input.label.toLowerCase(), labelPlural.toLowerCase()];
+  const defs: PreparedField[] = [];
+  for (const f of fields) {
+    const d = await prepareField(f, self.includes(String(f.target ?? "").toLowerCase()) ? slug : undefined);
+    if (defs.some((x) => x.key === d.key)) throw new CrmError(`Field "${d.key}" is listed twice`);
+    defs.push(d);
+  }
+
   const [{ max }] = await sql<{ max: number }[]>`select coalesce(max(position), 0) as max from object_types`;
   // Give every object a color so it's recognisable in links, search and the sidebar.
   const palette = ["blue", "violet", "green", "amber", "pink", "teal", "orange", "red"];
   const used = (await loadSchema()).map((o) => o.color);
-  if (input.color && !isColor(input.color)) throw new CrmError(`color must be a hex color like #0ea5e9 or one of ${OBJECT_COLORS.join(", ")}`);
   const color = input.color?.toLowerCase() || palette.find((c) => !used.includes(c)) || palette[(max + 1) % palette.length];
-  const [row] = await sql<{ id: string }[]>`
-    insert into object_types (slug, label, label_plural, description, icon, color, position, created_by)
-    values (${slug}, ${input.label}, ${labelPlural}, ${input.description ?? ""},
-            ${input.icon ?? ""}, ${color}, ${max + 1}, ${actor.name})
-    returning id`;
-  invalidateSchema();
-  await audit(sql, actor, "object.create", slug, row.id, null, input);
-  const fields = input.fields ?? [];
-  if (!fields.some((f) => (f.key || slugify(f.label)) === "name")) {
-    fields.unshift({ key: "name", label: "Name", type: "text", required: true });
+  try {
+    await sql.begin(async (tx) => {
+      const [row] = await tx<{ id: string }[]>`
+        insert into object_types (slug, label, label_plural, description, icon, color, position, created_by)
+        values (${slug}, ${input.label}, ${labelPlural}, ${input.description ?? ""},
+                ${input.icon ?? ""}, ${color}, ${max + 1}, ${actor.name})
+        returning id`;
+      await audit(tx, actor, "object.create", slug, row.id, null, input);
+      for (let i = 0; i < defs.length; i++) await insertField(tx, actor, row.id, slug, defs[i], i, fields[i]);
+    });
+  } catch (e) {
+    if ((e as { code?: string }).code === "23505") throw new CrmError(`Object "${slug}" already exists`, 409);
+    throw e;
+  } finally {
+    invalidateSchema();
   }
-  for (const f of fields) await addField(actor, slug, f);
   return getObject(slug);
 }
 
-export async function updateObjectType(
-  actor: Actor,
-  slug: string,
-  patch: Partial<Pick<ObjectType, "label" | "label_plural" | "description" | "icon" | "color" | "primary_field">>,
-) {
+const OBJECT_KEYS = ["label", "label_plural", "description", "icon", "color", "primary_field"] as const;
+export type ObjectPatch = Partial<Pick<ObjectType, (typeof OBJECT_KEYS)[number]>>;
+
+export async function updateObjectType(actor: Actor, slug: string, patch: ObjectPatch) {
   requireScope(actor, "schema");
   const obj = await getObject(slug);
   if (patch.primary_field) getField(obj, patch.primary_field);
@@ -111,47 +128,74 @@ export async function updateObjectType(
     throw new CrmError(`color must be a hex color like #0ea5e9 or one of ${OBJECT_COLORS.join(", ")}`);
   }
   if (patch.color) patch = { ...patch, color: patch.color.toLowerCase() };
-  const next = { ...obj, ...patch };
-  await sql`update object_types set label = ${next.label}, label_plural = ${next.label_plural},
-            description = ${next.description}, icon = ${next.icon}, color = ${next.color},
-            primary_field = ${next.primary_field} where id = ${obj.id}`;
-  if (patch.primary_field && patch.primary_field !== obj.primary_field) {
-    await sql`update records set display_name = coalesce(data->>${patch.primary_field}, '') where object_type_id = ${obj.id}`;
+  const keys = OBJECT_KEYS.filter((k) => patch[k] !== undefined);
+  try {
+    await sql.begin(async (tx) => {
+      const [cur] = await tx<ObjectType[]>`select * from object_types where id = ${obj.id} and archived_at is null for update`;
+      if (!cur) throw notFound(`Object ${slug}`);
+      const next = { ...cur, ...pick(patch, keys) } as ObjectType;
+      await writeObject(tx, cur, next);
+      // Snapshot what this edit set and what it replaced, so undo can put it back.
+      await audit(tx, actor, "object.update", obj.slug, obj.id, pick(cur, keys), pick(next, keys));
+    });
+  } finally {
+    invalidateSchema();
   }
-  invalidateSchema();
-  await audit(sql, actor, "object.update", slug, obj.id, pick(obj, Object.keys(patch)), patch);
-  return getObject(slug);
+  return getObject(obj.slug);
+}
+
+/** Write an object's editable columns. A new primary field re-derives every record's display name. */
+export async function writeObject(tx: Db, cur: ObjectType, next: ObjectType) {
+  await tx`update object_types set label = ${next.label}, label_plural = ${next.label_plural},
+            description = ${next.description}, icon = ${next.icon}, color = ${next.color},
+            primary_field = ${next.primary_field} where id = ${cur.id}`;
+  if (next.primary_field !== cur.primary_field) {
+    await tx`update records set display_name = coalesce(data->>${next.primary_field}, '') where object_type_id = ${cur.id}`;
+  }
 }
 
 /* ---------------------------------- fields ---------------------------------- */
 
-export async function addField(actor: Actor, slug: string, input: NewField) {
-  requireScope(actor, "schema");
-  const obj = await getObject(slug);
-  const key = slugify(input.key || input.label);
+type PreparedField = { key: string; type: FieldType; options: FieldOptions };
+
+/** Validate a new field definition. selfTarget is the slug of an object being created, for relations to itself. */
+async function prepareField(input: NewField, selfTarget?: string): Promise<PreparedField> {
+  const key = slugify(input.key || input.label || "");
   if (!key || key === "id") throw new CrmError("Invalid field key");
   if (!FIELD_TYPES.includes(input.type)) throw new CrmError(`Invalid type "${input.type}". Types: ${FIELD_TYPES.join(", ")}`);
-  const existing = await sql`select id from field_defs where object_type_id = ${obj.id} and key = ${key}`;
-  if (existing.length) throw new CrmError(`Field "${key}" already exists on ${obj.slug} (it may be archived)`, 409);
-
   const options: FieldOptions = {};
   if (input.type === "select" || input.type === "multi_select") options.choices = normalizeChoices(input.choices);
   if (input.type === "relation") {
     if (!input.target) throw new CrmError("relation fields need a target object slug");
-    options.target = (await getObject(input.target)).slug;
+    options.target = selfTarget ?? (await getObject(input.target)).slug;
     options.multiple = !!input.multiple;
   }
   if (input.type === "currency") options.currency = input.currency || "USD";
+  return { key, type: input.type, options };
+}
 
-  const position = obj.fields.length ? Math.max(...obj.fields.map((f) => f.position)) + 1 : 0;
-  const [row] = await sql<{ id: string }[]>`
+async function insertField(tx: Db, actor: Actor, objectId: string, slug: string, d: PreparedField, position: number, input: NewField) {
+  const [row] = await tx<{ id: string }[]>`
     insert into field_defs (object_type_id, key, label, description, type, options, required, is_unique, position, created_by)
-    values (${obj.id}, ${key}, ${input.label}, ${input.description ?? ""}, ${input.type}, ${json(options)}::jsonb,
+    values (${objectId}, ${d.key}, ${input.label}, ${input.description ?? ""}, ${d.type}, ${json(d.options)}::jsonb,
             ${!!input.required}, ${!!input.unique}, ${position}, ${actor.name})
     returning id`;
-  invalidateSchema();
-  await audit(sql, actor, "field.create", obj.slug, row.id, null, { key, ...input });
-  return getField(await getObject(slug), key);
+  await audit(tx, actor, "field.create", slug, row.id, null, { ...input, key: d.key });
+}
+
+export async function addField(actor: Actor, slug: string, input: NewField) {
+  requireScope(actor, "schema");
+  const obj = await getObject(slug);
+  const d = await prepareField(input);
+  const existing = await sql`select id from field_defs where object_type_id = ${obj.id} and key = ${d.key}`;
+  if (existing.length) throw new CrmError(`Field "${d.key}" already exists on ${obj.slug} (it may be archived)`, 409);
+  const position = obj.fields.length ? Math.max(...obj.fields.map((f) => f.position)) + 1 : 0;
+  try {
+    await sql.begin((tx) => insertField(tx, actor, obj.id, obj.slug, d, position, input));
+  } finally {
+    invalidateSchema();
+  }
+  return getField(await getObject(obj.slug), d.key);
 }
 
 export type FieldPatch = {
@@ -169,9 +213,22 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
   requireScope(actor, "schema");
   const obj = await getObject(slug);
   const f = getField(obj, key);
+  try {
+    await sql.begin((tx) => applyFieldUpdate(tx, actor, obj, f, patch));
+  } finally {
+    invalidateSchema();
+  }
+  return getField(await getObject(obj.slug), key);
+}
+
+/**
+ * The write behind updateField, inside the caller's transaction. Returns the new options.
+ * It doesn't touch the schema cache: callers invalidate it once their transaction ends.
+ */
+export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, f: FieldDef, patch: FieldPatch) {
   const options = structuredClone(f.options);
   if (patch.add_choices?.length || patch.choices) {
-    if (f.type !== "select" && f.type !== "multi_select") throw new CrmError(`${key} is not a select field`);
+    if (f.type !== "select" && f.type !== "multi_select") throw new CrmError(`${f.key} is not a select field`);
     let choices = options.choices ?? [];
     if (patch.choices) {
       const removed = choices.filter((c) => !patch.choices!.some((n) => n.value === c.value));
@@ -183,7 +240,10 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
       choices = normalizeChoices(patch.choices);
     }
     for (const c of normalizeChoices(patch.add_choices ?? [])) {
-      if (!choices.some((x) => x.value === c.value)) choices.push({ ...c, color: c.color });
+      const hit = choices.find((x) => x.value === c.value);
+      // Re-adding an option is a no-op; a different label with the same value is a collision.
+      if (hit && hit.label.toLowerCase() !== c.label.toLowerCase() && c.label.toLowerCase() !== hit.value) checkDistinct([hit, c]);
+      if (!hit) choices.push({ ...c, color: c.color });
     }
     options.choices = choices;
   }
@@ -193,19 +253,16 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
     required: patch.required ?? f.required,
     position: patch.position ?? f.position,
   };
-  await sql.begin(async (tx) => {
-    await tx`update field_defs set label = ${next.label}, description = ${next.description}, required = ${next.required},
-        position = ${next.position}, options = ${json(options)}::jsonb
-      where id = ${f.id}`;
-    // Snapshot exactly what changed (options live in options.choices) so undo can restore it.
-    const keys = (["label", "description", "required", "position"] as const).filter((k) => patch[k] !== undefined);
-    const choicesChanged = JSON.stringify(f.options.choices ?? null) !== JSON.stringify(options.choices ?? null);
-    const before = { ...pick(f, keys), ...(choicesChanged ? { choices: f.options.choices ?? [] } : {}) };
-    const after = { ...pick(next, keys), ...(choicesChanged ? { choices: options.choices ?? [] } : {}) };
-    await audit(tx, actor, "field.update", obj.slug, f.id, before, after);
-  });
-  invalidateSchema();
-  return getField(await getObject(slug), key);
+  await tx`update field_defs set label = ${next.label}, description = ${next.description}, required = ${next.required},
+      position = ${next.position}, options = ${json(options)}::jsonb
+    where id = ${f.id}`;
+  // Snapshot exactly what changed (options live in options.choices) so undo can restore it.
+  const keys = (["label", "description", "required", "position"] as const).filter((k) => patch[k] !== undefined);
+  const choicesChanged = JSON.stringify(f.options.choices ?? null) !== JSON.stringify(options.choices ?? null);
+  const before = { ...pick(f, keys), ...(choicesChanged ? { choices: f.options.choices ?? [] } : {}) };
+  const after = { ...pick(next, keys), ...(choicesChanged ? { choices: options.choices ?? [] } : {}) };
+  await audit(tx, actor, "field.update", obj.slug, f.id, before, after);
+  return options;
 }
 
 /* -------------------------- destructive (approval) -------------------------- */
@@ -233,7 +290,8 @@ export function describeChange(c: DestructiveChange) {
 export async function applyDestructive(actor: Actor, c: DestructiveChange) {
   const obj = await getObject(c.object);
   let before: unknown = null;
-  let after: unknown = c;
+  // Store the resolved slug (the request may name the object by its plural label) and ids, for undo.
+  let after: Record<string, unknown> = { ...c, object: obj.slug };
   try {
     await sql.begin(async (tx) => {
       switch (c.kind) {
@@ -245,12 +303,13 @@ export async function applyDestructive(actor: Actor, c: DestructiveChange) {
           const f = getField(obj, c.field);
           if (f.key === obj.primary_field) throw new CrmError("Cannot archive the primary field");
           await tx`update field_defs set archived_at = now() where id = ${f.id}`;
+          after.field_id = f.id;
           break;
         }
         case "change_field_type": {
           const f = getField(obj, c.field);
           before = { type: f.type, options: f.options };
-          after = { ...c, converted: await convertFieldType(tx, obj, f, c.type) };
+          after.converted = await convertFieldType(tx, obj, f, c.type);
           break;
         }
         case "remove_choices": {
@@ -295,7 +354,7 @@ async function convertFieldType(tx: Db, obj: ObjectType, f: FieldDef, type: Fiel
         const s = String(x).trim();
         if (s && !optionFor.has(s.toLowerCase()) && !extra.some((e) => e.toLowerCase() === s.toLowerCase())) extra.push(s);
       }
-    normalizeChoices(extra).forEach((c, i) => {
+    normalizeChoices(extra, { allowSame: true }).forEach((c, i) => {
       // Two raw values can share a slug ("Big Co", "big-co"): they become one option.
       const hit = choices.find((x) => x.value === c.value);
       if (!hit) choices.push({ ...c, color: c.color });

@@ -14,6 +14,7 @@ import {
   restoreRecord,
   searchAll,
   updateRecord,
+  writeReply,
   type Filter,
 } from "../core/records.js";
 import { addField, createObjectType, loadSchema, updateField, updateObjectType } from "../core/schema.js";
@@ -162,6 +163,13 @@ api.delete("/objects/:slug/fields/:key", async (c) =>
 
 /* --------------------------------- records --------------------------------- */
 
+/** A non-negative integer query parameter, capped at max. Missing or empty → fallback. */
+function intParam(v: string | undefined, name: string, fallback: number, max = Number.MAX_SAFE_INTEGER) {
+  if (v === undefined || v === "") return fallback;
+  if (!/^\d{1,15}$/.test(v)) throw new CrmError(`${name} must be a whole number of 0 or more`);
+  return Math.min(Number(v), max);
+}
+
 function listParams(q: Record<string, string>) {
   let filters: Filter[] | undefined;
   try {
@@ -177,8 +185,8 @@ api.get("/objects/:slug/records", async (c) => {
   return c.json(
     await listRecords(c.req.param("slug"), {
       ...listParams(q),
-      limit: q.limit ? Number(q.limit) : 100,
-      offset: q.offset ? Number(q.offset) : 0,
+      limit: intParam(q.limit, "limit", 100, 500),
+      offset: intParam(q.offset, "offset", 0),
     }),
   );
 });
@@ -188,11 +196,21 @@ api.get("/objects/:slug/groups", async (c) => {
   if (!q.field) throw new CrmError("field is required");
   return c.json(await groupRecords(c.req.param("slug"), q.field, { ...listParams(q), sum: q.sum || undefined }));
 });
-api.post("/objects/:slug/records", async (c) => c.json(await createRecord(c.get("actor"), c.req.param("slug"), await c.req.json())));
+// Writes by a key without the read scope return only {id, action} (see writeReply).
+api.post("/objects/:slug/records", async (c) => {
+  const rec = await createRecord(c.get("actor"), c.req.param("slug"), await c.req.json());
+  return c.json(writeReply(c.get("actor"), "created", rec.id, rec));
+});
 api.get("/records/:id", async (c) => c.json(await getRecord(c.req.param("id"))));
-api.patch("/records/:id", async (c) => c.json(await updateRecord(c.get("actor"), c.req.param("id"), await c.req.json())));
+api.patch("/records/:id", async (c) => {
+  const rec = await updateRecord(c.get("actor"), c.req.param("id"), await c.req.json());
+  return c.json(writeReply(c.get("actor"), "updated", rec.id, rec));
+});
 api.delete("/records/:id", async (c) => c.json(await archiveRecord(c.get("actor"), c.req.param("id"))));
-api.post("/records/:id/restore", async (c) => c.json(await restoreRecord(c.get("actor"), c.req.param("id"))));
+api.post("/records/:id/restore", async (c) => {
+  const id = c.req.param("id");
+  return c.json(writeReply(c.get("actor"), "restored", id, await restoreRecord(c.get("actor"), id)));
+});
 api.get("/records/:id/timeline", async (c) => c.json(await timeline(c.req.param("id"))));
 api.post("/records/:id/activities", async (c) =>
   c.json(await logActivity(c.get("actor"), { ...(await c.req.json()), record_id: c.req.param("id") })),
@@ -214,7 +232,7 @@ api.post("/changes/:id/:decision{approve|reject}", async (c) => {
   return c.json(await decideChange(c.req.param("id"), c.req.param("decision") === "approve"));
 });
 api.get("/audit", async (c) => {
-  const rows = await listAudit(Number(c.req.query("limit") ?? 200));
+  const rows = await listAudit(intParam(c.req.query("limit"), "limit", 200, 1000));
   return c.json(rows.map((r) => ({ ...r, undoable: UNDOABLE.has(r.action) && !r.undone_at })));
 });
 api.post("/audit/:id/undo", async (c) => {
