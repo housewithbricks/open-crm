@@ -1,4 +1,5 @@
 import { sql, type Db } from "../db.js";
+import { transaction } from "./audit.js";
 import { UUID_RE } from "./fields.js";
 import { insertRecord, listRecords, upsertIn } from "./records.js";
 import { applyFieldUpdate, getObject, invalidateSchema } from "./schema.js";
@@ -80,7 +81,7 @@ export async function importRows(actor: Actor, slug: string, rows: Record<string
     try {
       // A copy, so options added by a row that then fails don't leak into the next one.
       const obj = structuredClone(await getObject(slug));
-      const r = await sql.begin(async (tx) => {
+      const r = await transaction(async (tx) => {
         const data: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(rows[i] ?? {})) {
           if (v === undefined || v === null || (typeof v === "string" && !v.trim())) continue;

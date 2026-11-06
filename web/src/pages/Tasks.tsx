@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { LinkChips, LinkPicker } from "../components/links";
 import { Button, DueDate, Empty, ErrorBox, Hint, Input, Label, List, Modal, ModalActions, PageHead, Segmented, Textarea, Who } from "../components/ui";
 import { api, invalidateAll, type Ref, type Task } from "../lib/api";
@@ -38,6 +38,7 @@ export function TaskList({ tasks, empty = "No open tasks.", flat }: { tasks: Tas
 }
 
 function EditTask({ task, onClose }: { task: Task; onClose: () => void }) {
+  const id = useId();
   const [title, setTitle] = useState(task.title);
   const [body, setBody] = useState(task.body);
   const [due, setDue] = useState(task.due_at?.slice(0, 10) ?? "");
@@ -53,16 +54,16 @@ function EditTask({ task, onClose }: { task: Task; onClose: () => void }) {
   return (
     <Modal title="Edit task" onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-        <Label>Task</Label>
-        <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Label>Linked records</Label>
+        <Label htmlFor={`${id}-title`}>Task</Label>
+        <Input id={`${id}-title`} autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Label htmlFor={`${id}-links`}>Linked records</Label>
         <div className="flex min-h-8 items-center rounded-ctl border border-line-2 px-1.5 py-0.5 focus-within:border-accent focus-within:ring-3 focus-within:ring-accent-soft">
-          <LinkPicker value={links} onChange={setLinks} placeholder="Search people, companies, deals…" />
+          <LinkPicker id={`${id}-links`} value={links} onChange={setLinks} placeholder="Search people, companies, deals…" />
         </div>
-        <Label>Due</Label>
-        <Input type="date" className="w-[180px]" value={due} onChange={(e) => setDue(e.target.value)} />
-        <Label>Notes</Label>
-        <Textarea value={body} onChange={(e) => setBody(e.target.value)} />
+        <Label htmlFor={`${id}-due`}>Due</Label>
+        <Input id={`${id}-due`} type="date" className="w-[180px]" value={due} onChange={(e) => setDue(e.target.value)} />
+        <Label htmlFor={`${id}-body`}>Notes</Label>
+        <Textarea id={`${id}-body`} value={body} onChange={(e) => setBody(e.target.value)} />
         <Hint>Created by <Who type={task.actor_type} name={task.actor_name} /> on {fmtDate(task.created_at)}</Hint>
         <ErrorBox error={save.error || remove.error} />
         <ModalActions>
@@ -87,7 +88,7 @@ export function NewTask() {
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (title.trim()) add.mutate(); }}
       className="rounded-lg border border-line-2 bg-panel focus-within:border-accent focus-within:ring-3 focus-within:ring-accent-soft">
-      <input placeholder="Add a task…" value={title} onChange={(e) => setTitle(e.target.value)}
+      <input placeholder="Add a task…" aria-label="New task" value={title} onChange={(e) => setTitle(e.target.value)}
         className="h-10 w-full border-0 bg-transparent px-3 text-sm outline-none placeholder:text-faint" />
       <div className="flex items-center gap-2 border-t border-line px-2 py-1.5">
         <LinkPicker value={links} onChange={setLinks} />

@@ -832,6 +832,124 @@ describe("round 2 fixes", () => {
   });
 });
 
+describe("round 3 fixes", () => {
+  const fieldOf = async (slug: string, key: string) =>
+    (await rest("/schema")).data.objects.find((o: any) => o.slug === slug).fields.find((f: any) => f.key === key);
+
+  it("1: a rolled-back import row sends no webhooks", async () => {
+    const { createServer } = await import("node:http");
+    const got: any[] = [];
+    const recv = createServer((req, res) => {
+      let b = "";
+      req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        got.push(JSON.parse(b));
+        res.end("ok");
+      });
+    }).listen(8795);
+    const hook = (await rest("/webhooks", { body: { url: "http://localhost:8795/", events: ["record.created", "schema.changed"] } })).data;
+    try {
+      const r = await rest("/objects/people/import", {
+        body: { add_missing_options: true, rows: [{ name: "Hookless", email: "nope", company: "Rollback Co", status: "Ghostly" }] },
+      });
+      assert.equal(r.data.failed, 1);
+      // A committed write afterwards is delivered, so the listener works and anything earlier has arrived.
+      await mcp("create_record", { object: "companies", data: { name: "Committed Co" } });
+      for (let i = 0; i < 60 && !got.some((p) => p.after?.name === "Committed Co"); i++) await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 200));
+      assert.deepEqual(got.map((p) => p.after?.name ?? p.action), ["Committed Co"]);
+    } finally {
+      await rest(`/webhooks/${hook.id}`, { method: "DELETE" });
+      recv.close();
+    }
+  });
+
+  it("2: write-only keys get {id, action} back from activity and view writes", async () => {
+    const w = (await rest("/keys", { body: { name: "Writer3", scopes: ["write"] } })).data.key;
+    const rec = (await rest("/objects/people/records", { body: { name: "Linked Lou" } })).data;
+    const only = (d: any) => assert.deepEqual(Object.keys(d).sort(), ["action", "id"], JSON.stringify(d));
+    const task = (await mcp("create_task", { title: "Call", record_ids: [rec.id] }, w)).data;
+    only(task);
+    only((await mcp("update_task", { task_id: task.id, title: "Call back" }, w)).data);
+    only((await mcp("complete_task", { task_id: task.id }, w)).data);
+    only((await mcp("log_activity", { record_ids: [rec.id], kind: "note", body: "hi" }, w)).data);
+    only((await rest(`/activities/${task.id}`, { method: "PATCH", body: { title: "x" }, bearer: w })).data);
+    only((await rest("/activities", { body: { kind: "note", body: "b", record_ids: [rec.id] }, bearer: w })).data);
+    only((await rest(`/records/${rec.id}/activities`, { body: { kind: "note", body: "c" }, bearer: w })).data);
+    const view = (await mcp("save_view", { object: "people", name: "W view" }, w)).data;
+    only(view);
+    only((await mcp("update_view", { view_id: view.id, name: "W view 2" }, w)).data);
+    const rv = (await rest("/objects/people/views", { body: { name: "W view 3" }, bearer: w })).data;
+    only(rv);
+    only((await rest(`/views/${rv.id}`, { method: "PATCH", body: { name: "W view 4" }, bearer: w })).data);
+    // Keys that can read still get the full row.
+    assert.equal((await rest(`/activities/${task.id}`, { method: "PATCH", body: { title: "y" }, bearer: key })).data.links[0].display_name, "Linked Lou");
+  });
+
+  it("3: concurrent edits to one field keep both changes", async () => {
+    await rest("/objects/people/fields", { body: { label: "Mood", type: "select", choices: ["Calm"] } });
+    const f = await fieldOf("people", "mood");
+    const race = async (a: unknown, b: unknown) => {
+      let p: Promise<unknown>[] = [];
+      await db.begin(async (tx) => {
+        await tx`select 1 from field_defs where id = ${f.id} for update`;
+        p = [rest("/objects/people/fields/mood", { method: "PATCH", body: a }), rest("/objects/people/fields/mood", { method: "PATCH", body: b })];
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      return Promise.all(p);
+    };
+    await race({ label: "Feeling" }, { description: "How they seem" });
+    let now = await fieldOf("people", "mood");
+    assert.deepEqual([now.label, now.description], ["Feeling", "How they seem"]);
+    await race({ add_choices: ["Happy"] }, { add_choices: ["Sad"] });
+    now = await fieldOf("people", "mood");
+    assert.deepEqual(now.options.choices.map((c: any) => c.value).sort(), ["calm", "happy", "sad"]);
+  });
+
+  it("4: a change request is decided once", async () => {
+    await rest("/objects/people/fields", { body: { label: "Doomed", type: "text" } });
+    const cr = (await mcp("request_schema_change", { kind: "archive_field", object: "people", field: "doomed", reason: "test" })).data.change_request;
+    let p: Promise<{ status: number }>[] = [];
+    await db.begin(async (tx) => {
+      await tx`select 1 from change_requests where id = ${cr.id} for update`;
+      p = [rest(`/changes/${cr.id}/approve`, { body: {} }), rest(`/changes/${cr.id}/reject`, { body: {} })];
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    const statuses = (await Promise.all(p)).map((r) => r.status).sort();
+    assert.deepEqual(statuses, [200, 409]);
+    const [row] = await db`select status from change_requests where id = ${cr.id}`;
+    const archived = !(await fieldOf("people", "doomed"));
+    assert.equal(archived, row.status === "approved", "the field is archived only if the request was approved");
+  });
+
+  it("5: date fields are stored as YYYY-MM-DD and loose input is refused", async () => {
+    await rest("/objects/people/fields", { body: { label: "Met on", type: "date" } });
+    const put = (v: unknown) => rest("/objects/people/records", { body: { name: "Dated", met_on: v } });
+    for (const v of ["12/31", "TBD 2026", "2026-02-30", "2026-13-01", "13/1/2026", "2/30/2026", "March 5"]) {
+      const r = await put(v);
+      assert.equal(r.status, 400, v);
+      assert.match(r.data.error, /use YYYY-MM-DD/);
+    }
+    for (const [v, want] of [["2026-03-05", "2026-03-05"], ["2026-03-05T23:30:00-08:00", "2026-03-05"], ["2026-03-05T00:00:00.000Z", "2026-03-05"], ["3/7/2026", "2026-03-07"], ["2024-02-29", "2024-02-29"]]) {
+      const r = await put(v);
+      assert.equal(r.status, 200, v);
+      assert.equal(r.data.data.met_on, want, v);
+    }
+  });
+
+  it("6: a login without a string password is a 400 and counts as a failure", async () => {
+    const post = (body: string, ip = "5.5.5.5") =>
+      fetch(BASE + "/api/login", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip }, body });
+    for (const body of ['{"password":12}', "{}", "null"]) {
+      const r = await post(body);
+      assert.equal(r.status, 400, body);
+      assert.match(((await r.json()) as any).error, /password is required/);
+    }
+    for (let i = 0; i < 7; i++) await post("{}");
+    assert.equal((await post(JSON.stringify({ password: PASSWORD }))).status, 429, "ten bad payloads lock the address");
+  });
+});
+
 describe("sessions", () => {
   it("signs out everywhere", async () => {
     const a = (await signIn()).cookie;

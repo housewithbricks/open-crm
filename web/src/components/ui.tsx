@@ -31,8 +31,9 @@ export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLText
   return <textarea className={cn(inputClass, "h-auto min-h-[72px] resize-y py-2 leading-normal", className)} {...rest} />;
 }
 
-export function Label({ children, className }: { children: ReactNode; className?: string }) {
-  return <label className={cn("mt-3.5 mb-1.5 block text-xs font-medium text-ink-2", className)}>{children}</label>;
+/** A form label. Pass htmlFor (the control's id), or an id for a group to point aria-labelledby at. */
+export function Label({ children, className, htmlFor, id }: { children: ReactNode; className?: string; htmlFor?: string; id?: string }) {
+  return <label htmlFor={htmlFor} id={id} className={cn("mt-3.5 mb-1.5 block text-xs font-medium text-ink-2", className)}>{children}</label>;
 }
 
 export const Hint = ({ children }: { children: ReactNode }) => <p className="mt-1 text-xs text-muted">{children}</p>;

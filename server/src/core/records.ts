@@ -1,5 +1,5 @@
 import { json, sql, type Db } from "../db.js";
-import { audit } from "./audit.js";
+import { audit, transaction } from "./audit.js";
 import { coerceValue, UUID_RE, validateData } from "./fields.js";
 import { getField, getObject, loadSchema } from "./schema.js";
 import { CrmError, notFound, requireScope, type Actor, type FieldDef, type ObjectType } from "./types.js";
@@ -353,19 +353,19 @@ async function patchRecord(db: Db, actor: Actor, id: string, patch: Record<strin
 export async function createRecord(actor: Actor, slug: string, input: Record<string, unknown>) {
   requireScope(actor, "write");
   const obj = await getObject(slug);
-  return sql.begin((tx) => insertRecord(tx, actor, obj, input));
+  return transaction((tx) => insertRecord(tx, actor, obj, input));
 }
 
 export async function updateRecord(actor: Actor, id: string, patch: Record<string, unknown>) {
   requireScope(actor, "write");
-  return sql.begin((tx) => patchRecord(tx, actor, id, patch));
+  return transaction((tx) => patchRecord(tx, actor, id, patch));
 }
 
 /** Find by a unique-ish field (e.g. email, domain), update if found, create otherwise. */
 export async function upsertRecord(actor: Actor, slug: string, matchOn: string, input: Record<string, unknown>) {
   requireScope(actor, "write");
   const obj = await getObject(slug);
-  return sql.begin((tx) => upsertIn(tx, actor, obj, matchOn, input));
+  return transaction((tx) => upsertIn(tx, actor, obj, matchOn, input));
 }
 
 /** upsertRecord inside the caller's transaction. */
@@ -400,7 +400,7 @@ export async function revertRecordUpdate(db: Db, actor: Actor, id: string, befor
 export async function archiveRecord(actor: Actor, id: string) {
   requireScope(actor, "write");
   const { obj, rec } = await fetchRow(id);
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     await tx`update records set deleted_at = now(), updated_by = ${actor.name} where id = ${id}`;
     await audit(tx, actor, "record.archive", obj.slug, id, rec.data, null);
   });
@@ -411,7 +411,7 @@ export async function archiveRecord(actor: Actor, id: string) {
 export async function restoreRecord(actor: Actor, id: string) {
   requireScope(actor, "write");
   checkId(id);
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     const [row] = await tx`select r.id, r.data, o.slug from records r join object_types o on o.id = r.object_type_id
       where r.id = ${id} and r.deleted_at is not null for update of r`;
     if (!row) throw notFound("Archived record");

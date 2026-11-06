@@ -1,10 +1,11 @@
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api, invalidateAll, type ObjectType } from "../lib/api";
 import { Button, ErrorBox, Input, Label, Modal, ModalActions } from "./ui";
 
 export default function NewObjectModal({ onClose }: { onClose: () => void }) {
+  const id = useId();
   const [label, setLabel] = useState("");
   const [plural, setPlural] = useState("");
   const [description, setDescription] = useState("");
@@ -17,12 +18,12 @@ export default function NewObjectModal({ onClose }: { onClose: () => void }) {
     <Modal title="New object" onClose={onClose}>
       <p className="mt-0 text-muted">A new kind of record, like Investors, Properties or Projects. It starts with a Name field; add more after. Your agents can create objects too.</p>
       <form onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
-        <Label>Singular name</Label>
-        <Input autoFocus placeholder="Investor" value={label} onChange={(e) => setLabel(e.target.value)} />
-        <Label>Plural name</Label>
-        <Input placeholder={label ? `${label}s` : "Investors"} value={plural} onChange={(e) => setPlural(e.target.value)} />
-        <Label>Description</Label>
-        <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+        <Label htmlFor={`${id}-label`}>Singular name</Label>
+        <Input id={`${id}-label`} autoFocus placeholder="Investor" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <Label htmlFor={`${id}-plural`}>Plural name</Label>
+        <Input id={`${id}-plural`} placeholder={label ? `${label}s` : "Investors"} value={plural} onChange={(e) => setPlural(e.target.value)} />
+        <Label htmlFor={`${id}-desc`}>Description</Label>
+        <Input id={`${id}-desc`} value={description} onChange={(e) => setDescription(e.target.value)} />
         <ErrorBox error={create.error} />
         <ModalActions>
           <Button onClick={onClose}>Cancel</Button>

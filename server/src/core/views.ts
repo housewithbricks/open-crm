@@ -1,6 +1,6 @@
 import { json, sql } from "../db.js";
 import { audit } from "./audit.js";
-import { FILTER_HELP, FILTER_OPS, listRecords, META_FILTER_FIELDS, type Filter } from "./records.js";
+import { FILTER_HELP, FILTER_OPS, listRecords, META_FILTER_FIELDS, writeReply, type Filter } from "./records.js";
 import { getField, getObject } from "./schema.js";
 import { CrmError, notFound, requireScope, type Actor } from "./types.js";
 
@@ -60,7 +60,7 @@ export async function createView(actor: Actor, slug: string, input: { name: stri
     values (${obj.id}, ${input.name.trim()}, ${json(config)}::jsonb, ${actor.name})
     returning id, ${obj.slug}::text as object, name, config, position, created_by, created_at`;
   await audit(sql, actor, "view.create", obj.slug, row.id, null, { name: row.name, config });
-  return row;
+  return writeReply(actor, "created", row.id, row);
 }
 
 export async function updateView(actor: Actor, id: string, patch: { name?: string; config?: ViewConfig }) {
@@ -71,7 +71,7 @@ export async function updateView(actor: Actor, id: string, patch: { name?: strin
   const [row] = await sql<SavedView[]>`update views set name = ${patch.name?.trim() || cur.name}, config = ${json(config)}::jsonb
     where id = ${id} returning id, ${cur.slug}::text as object, name, config, position, created_by, created_at`;
   await audit(sql, actor, "view.update", cur.slug, id, { name: cur.name, config: cur.config }, { name: row.name, config });
-  return row;
+  return writeReply(actor, "updated", id, row);
 }
 
 export async function deleteView(actor: Actor, id: string) {

@@ -1,6 +1,7 @@
 import { sql, type Db } from "../db.js";
-import { audit } from "./audit.js";
+import { audit, transaction } from "./audit.js";
 import { UUID_RE } from "./fields.js";
+import { writeReply } from "./records.js";
 import { CrmError, notFound, requireScope, type Actor } from "./types.js";
 
 export const ACTIVITY_KINDS = ["note", "call", "email", "meeting", "task"] as const;
@@ -72,7 +73,7 @@ export async function logActivity(
   if (input.kind === "task" && !input.title) throw new CrmError("Tasks need a title");
   if (!input.title && !input.body) throw new CrmError("Provide a title or body");
   const due = parseDue(input.due_at);
-  const row = await sql.begin(async (tx) => {
+  const row = await transaction(async (tx) => {
     const ids = await resolveLinks(tx, [input.record_id, ...(input.record_ids ?? [])]);
     const [row] = await tx<Activity[]>`
       insert into activities (record_id, kind, title, body, due_at, actor_type, actor_name)
@@ -85,7 +86,7 @@ export async function logActivity(
     });
     return row;
   });
-  return { ...row, links: (await linksFor([row.id]))[row.id] ?? [] };
+  return writeReply(actor, "created", row.id, { ...row, links: (await linksFor([row.id]))[row.id] ?? [] });
 }
 
 /** Activity fields as stored in audit entries: plain JSON, timestamps as ISO strings. */
@@ -116,7 +117,7 @@ export async function updateActivity(
 ) {
   requireScope(actor, "write");
   if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     const [cur] = await tx<Activity[]>`select * from activities where id = ${id} and deleted_at is null for update`;
     if (!cur) throw notFound(opts.taskOnly ? "Task" : "Activity");
     if (opts.taskOnly && cur.kind !== "task") throw new CrmError(`${id} is a ${cur.kind}, not a task`);
@@ -138,6 +139,8 @@ export async function updateActivity(
     await writeSnapshot(tx, id, changed);
     await audit(tx, actor, "activity.update", null, id, { kind: cur.kind, ...Object.fromEntries(keys.map((k) => [k, prev[k]])) }, { kind: cur.kind, ...changed });
   });
+  // Without the read scope, only the id and what happened (see writeReply).
+  if (!actor.scopes.includes("read")) return { id, action: "updated" as const };
   const [row] = await sql<Activity[]>`select * from activities where id = ${id}`;
   return { ...row, links: (await linksFor([id]))[id] ?? [] };
 }
@@ -146,7 +149,7 @@ export async function updateActivity(
 export async function deleteActivity(actor: Actor, id: string) {
   requireScope(actor, "write");
   if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     const [row] = await tx<Activity[]>`update activities set deleted_at = now() where id = ${id} and deleted_at is null returning id`;
     if (!row) throw notFound("Activity");
     await audit(tx, actor, "activity.delete", null, id, await snapshot(tx, id), null);
@@ -159,7 +162,7 @@ export async function deleteActivity(actor: Actor, id: string) {
  * unless force is set.
  */
 export async function revertActivityUpdate(actor: Actor, id: string, before: ActivitySnapshot, after: ActivitySnapshot, force: boolean) {
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     const [cur] = await tx`select id from activities where id = ${id} and deleted_at is null for update`;
     if (!cur) throw notFound("Activity");
     const now = await snapshot(tx, id);
@@ -180,7 +183,7 @@ export async function revertActivityUpdate(actor: Actor, id: string, before: Act
 }
 
 export async function restoreActivity(actor: Actor, id: string) {
-  await sql.begin(async (tx) => {
+  await transaction(async (tx) => {
     const [row] = await tx`update activities set deleted_at = null where id = ${id} and deleted_at is not null returning id`;
     if (!row) throw notFound("Deleted activity");
     await audit(tx, actor, "activity.restore", null, id, null, await snapshot(tx, id));

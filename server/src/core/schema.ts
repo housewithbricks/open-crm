@@ -1,6 +1,6 @@
 import { json, sql, type Db } from "../db.js";
 import { isColor, OBJECT_COLORS } from "./settings.js";
-import { audit } from "./audit.js";
+import { audit, transaction } from "./audit.js";
 import { checkDistinct, coerceValue, normalizeChoices, slugify } from "./fields.js";
 import {
   CrmError,
@@ -99,7 +99,7 @@ export async function createObjectType(actor: Actor, input: NewObject) {
   const used = (await loadSchema()).map((o) => o.color);
   const color = input.color?.toLowerCase() || palette.find((c) => !used.includes(c)) || palette[(max + 1) % palette.length];
   try {
-    await sql.begin(async (tx) => {
+    await transaction(async (tx) => {
       const [row] = await tx<{ id: string }[]>`
         insert into object_types (slug, label, label_plural, description, icon, color, position, created_by)
         values (${slug}, ${input.label}, ${labelPlural}, ${input.description ?? ""},
@@ -130,7 +130,7 @@ export async function updateObjectType(actor: Actor, slug: string, patch: Object
   if (patch.color) patch = { ...patch, color: patch.color.toLowerCase() };
   const keys = OBJECT_KEYS.filter((k) => patch[k] !== undefined);
   try {
-    await sql.begin(async (tx) => {
+    await transaction(async (tx) => {
       const [cur] = await tx<ObjectType[]>`select * from object_types where id = ${obj.id} and archived_at is null for update`;
       if (!cur) throw notFound(`Object ${slug}`);
       const next = { ...cur, ...pick(patch, keys) } as ObjectType;
@@ -191,7 +191,7 @@ export async function addField(actor: Actor, slug: string, input: NewField) {
   if (existing.length) throw new CrmError(`Field "${d.key}" already exists on ${obj.slug} (it may be archived)`, 409);
   const position = obj.fields.length ? Math.max(...obj.fields.map((f) => f.position)) + 1 : 0;
   try {
-    await sql.begin((tx) => insertField(tx, actor, obj.id, obj.slug, d, position, input));
+    await transaction((tx) => insertField(tx, actor, obj.id, obj.slug, d, position, input));
   } finally {
     invalidateSchema();
   }
@@ -214,7 +214,7 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
   const obj = await getObject(slug);
   const f = getField(obj, key);
   try {
-    await sql.begin((tx) => applyFieldUpdate(tx, actor, obj, f, patch));
+    await transaction((tx) => applyFieldUpdate(tx, actor, obj, f, patch));
   } finally {
     invalidateSchema();
   }
@@ -225,7 +225,9 @@ export async function updateField(actor: Actor, slug: string, key: string, patch
  * The write behind updateField, inside the caller's transaction. Returns the new options.
  * It doesn't touch the schema cache: callers invalidate it once their transaction ends.
  */
-export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, f: FieldDef, patch: FieldPatch) {
+export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, field: FieldDef, patch: FieldPatch) {
+  // Lock and re-read the row, so a concurrent edit to this field isn't overwritten with an older copy.
+  const f = await lockField(tx, field.id);
   const options = structuredClone(f.options);
   if (patch.add_choices?.length || patch.choices) {
     if (f.type !== "select" && f.type !== "multi_select") throw new CrmError(`${f.key} is not a select field`);
@@ -265,6 +267,13 @@ export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, f:
   return options;
 }
 
+/** The field's current row, locked until the transaction ends. */
+export async function lockField(tx: Db, id: string) {
+  const [f] = await tx<FieldDef[]>`select * from field_defs where id = ${id} and archived_at is null for update`;
+  if (!f) throw notFound("Field");
+  return f;
+}
+
 /* -------------------------- destructive (approval) -------------------------- */
 
 export type DestructiveChange =
@@ -288,42 +297,45 @@ export function describeChange(c: DestructiveChange) {
 
 /** Run a destructive schema change. Callers decide if approval is needed first. */
 export async function applyDestructive(actor: Actor, c: DestructiveChange) {
+  try {
+    await transaction((tx) => applyDestructiveIn(tx, actor, c));
+  } finally {
+    invalidateSchema();
+  }
+}
+
+/** The write behind applyDestructive, inside the caller's transaction. Callers invalidate the schema cache after. */
+export async function applyDestructiveIn(tx: Db, actor: Actor, c: DestructiveChange) {
   const obj = await getObject(c.object);
   let before: unknown = null;
   // Store the resolved slug (the request may name the object by its plural label) and ids, for undo.
   let after: Record<string, unknown> = { ...c, object: obj.slug };
-  try {
-    await sql.begin(async (tx) => {
-      switch (c.kind) {
-        case "archive_object":
-          if (obj.is_system) throw new CrmError(`${obj.slug} is a built-in object and cannot be archived`);
-          await tx`update object_types set archived_at = now() where id = ${obj.id}`;
-          break;
-        case "archive_field": {
-          const f = getField(obj, c.field);
-          if (f.key === obj.primary_field) throw new CrmError("Cannot archive the primary field");
-          await tx`update field_defs set archived_at = now() where id = ${f.id}`;
-          after.field_id = f.id;
-          break;
-        }
-        case "change_field_type": {
-          const f = getField(obj, c.field);
-          before = { type: f.type, options: f.options };
-          after.converted = await convertFieldType(tx, obj, f, c.type);
-          break;
-        }
-        case "remove_choices": {
-          const f = getField(obj, c.field);
-          const choices = (f.options.choices ?? []).filter((x) => !c.values.includes(x.value));
-          await tx`update field_defs set options = ${json({ ...f.options, choices })}::jsonb where id = ${f.id}`;
-          break;
-        }
-      }
-      await audit(tx, actor, `schema.${c.kind}`, obj.slug, obj.id, before, after);
-    });
-  } finally {
-    invalidateSchema();
+  switch (c.kind) {
+    case "archive_object":
+      if (obj.is_system) throw new CrmError(`${obj.slug} is a built-in object and cannot be archived`);
+      await tx`update object_types set archived_at = now() where id = ${obj.id}`;
+      break;
+    case "archive_field": {
+      const f = getField(obj, c.field);
+      if (f.key === obj.primary_field) throw new CrmError("Cannot archive the primary field");
+      await tx`update field_defs set archived_at = now() where id = ${f.id}`;
+      after.field_id = f.id;
+      break;
+    }
+    case "change_field_type": {
+      const f = await lockField(tx, getField(obj, c.field).id);
+      before = { type: f.type, options: f.options };
+      after.converted = await convertFieldType(tx, obj, f, c.type);
+      break;
+    }
+    case "remove_choices": {
+      const f = await lockField(tx, getField(obj, c.field).id);
+      const choices = (f.options.choices ?? []).filter((x) => !c.values.includes(x.value));
+      await tx`update field_defs set options = ${json({ ...f.options, choices })}::jsonb where id = ${f.id}`;
+      break;
+    }
   }
+  await audit(tx, actor, `schema.${c.kind}`, obj.slug, obj.id, before, after);
 }
 
 /**

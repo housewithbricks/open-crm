@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { api, invalidateAll, type ImportResult, type ObjectType } from "../lib/api";
 import { parseCsv } from "../lib/csv";
 import { Select } from "./select";
@@ -8,6 +8,7 @@ import { Button, ErrorBox, Label, Modal, ModalActions } from "./ui";
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 export default function ImportModal({ obj, onClose }: { obj: ObjectType; onClose: () => void }) {
+  const id = useId();
   const [rows, setRows] = useState<string[][] | null>(null);
   const [fileName, setFileName] = useState("");
   const [mapping, setMapping] = useState<string[]>([]);
@@ -71,8 +72,8 @@ export default function ImportModal({ obj, onClose }: { obj: ObjectType; onClose
               </div>
             ))}
           </div>
-          <Label>Update existing records that match on</Label>
-          <Select value={matchOn} clearable="Don't match (always create)" ariaLabel="Match on"
+          <Label htmlFor={`${id}-match`}>Update existing records that match on</Label>
+          <Select id={`${id}-match`} value={matchOn} clearable="Don't match (always create)" ariaLabel="Match on"
             options={uniqueish.map((f) => ({ value: f.key, label: f.label }))} onChange={setMatchOn} />
           <label className="mt-2.5 flex cursor-pointer items-center gap-2"><input type="checkbox" className="square" checked={addOptions} onChange={(e) => setAddOptions(e.target.checked)} /> Add unknown select values as new options</label>
           <label className="mt-1.5 flex cursor-pointer items-center gap-2"><input type="checkbox" className="square" checked={createRel} onChange={(e) => setCreateRel(e.target.checked)} /> Create related records that don't exist yet</label>

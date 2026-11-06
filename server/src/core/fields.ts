@@ -17,6 +17,23 @@ function matchChoice(field: FieldDef, raw: unknown): string {
   return hit.value;
 }
 
+/**
+ * A calendar day as YYYY-MM-DD, or null. Accepts YYYY-MM-DD, an ISO date-time (its own date
+ * part, whatever the offset) and M/D/YYYY. The day must exist: 2026-02-30 is refused.
+ */
+export function toDay(s: string): string | null {
+  let m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?$/i.exec(s);
+  let ymd: number[];
+  if (m) ymd = [+m[1], +m[2], +m[3]];
+  else if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s))) ymd = [+m[3], +m[1], +m[2]];
+  else return null;
+  const [y, mo, d] = ymd;
+  const t = new Date(Date.UTC(2000, mo - 1, d));
+  t.setUTCFullYear(y);
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return null;
+  return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 /** Coerce and validate one value. Returns null for blank input. */
 export function coerceValue(field: FieldDef, raw: unknown): unknown {
   if (isBlank(raw)) return null;
@@ -49,9 +66,9 @@ export function coerceValue(field: FieldDef, raw: unknown): unknown {
       if (["false", "no", "0"].includes(String(raw).toLowerCase())) return false;
       throw bad(`"${raw}" is not a boolean`);
     case "date": {
-      const s = String(raw).trim();
-      if (Number.isNaN(Date.parse(s))) throw bad(`"${raw}" is not a date (use YYYY-MM-DD)`);
-      return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : new Date(s).toISOString();
+      const day = toDay(String(raw).trim());
+      if (!day) throw bad(`"${raw}" is not a date (use YYYY-MM-DD)`);
+      return day;
     }
     case "select":
       return matchChoice(field, raw);

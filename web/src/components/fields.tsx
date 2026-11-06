@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { api, type FieldDef, type RecordList, type Ref } from "../lib/api";
-import { cn, dot, fmtDate, fmtMoney } from "../lib/format";
+import { cn, dot, fmtDay, fmtMoney } from "../lib/format";
 import { Select } from "./select";
 import { inputClass, refClass, Tag } from "./ui";
 
@@ -13,7 +13,7 @@ export function ChoiceTag({ field, value }: { field: FieldDef; value: string }) 
 /** Toggleable option list used by multi-select inputs and filters. */
 export function ChoiceToggles({ field, value, onChange }: { field: FieldDef; value: string[]; onChange: (v: string[]) => void }) {
   return (
-    <div className="flex flex-wrap gap-1">
+    <div role="group" aria-label={field.label} className="flex flex-wrap gap-1">
       {field.options.choices?.map((c) => {
         const on = value.includes(c.value);
         return (
@@ -37,7 +37,7 @@ export function FieldValue({ field, value, refs, onOpen }: { field: FieldDef; va
     case "number":
       return <>{Number(value).toLocaleString()}</>;
     case "date":
-      return <>{fmtDate(value)}</>;
+      return <>{fmtDay(String(value))}</>;
     case "boolean":
       return <>{value ? "Yes" : "No"}</>;
     case "select":
@@ -70,7 +70,7 @@ export function FieldValue({ field, value, refs, onOpen }: { field: FieldDef; va
   }
 }
 
-export function RelationPicker({ field, value, refs, onChange }: { field: FieldDef; value: any; refs?: Record<string, Ref>; onChange: (v: any) => void }) {
+export function RelationPicker({ field, value, refs, onChange, id }: { field: FieldDef; value: any; refs?: Record<string, Ref>; onChange: (v: any) => void; id?: string }) {
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -96,7 +96,7 @@ export function RelationPicker({ field, value, refs, onChange }: { field: FieldD
           ))}
         </div>
       )}
-      <input className={inputClass} autoFocus placeholder={`Search ${field.options.target}…`} value={q}
+      <input id={id} className={inputClass} autoFocus placeholder={`Search ${field.options.target}…`} value={q}
         role="combobox" aria-expanded={options.length > 0} aria-controls={listId} aria-autocomplete="list"
         aria-activedescendant={options[cur] ? `${listId}-${options[cur].id}` : undefined}
         onChange={(e) => { setQ(e.target.value); setActive(0); }}
@@ -119,11 +119,12 @@ export function RelationPicker({ field, value, refs, onChange }: { field: FieldD
   );
 }
 
-export function FieldInput({ field, value, refs, onChange, onCommit, autoFocus }: {
-  field: FieldDef; value: any; refs?: Record<string, Ref>; onChange: (v: any) => void; onCommit?: () => void; autoFocus?: boolean;
+/** An editor for one field. `id` goes on the focusable control, for a <label htmlFor>. */
+export function FieldInput({ field, value, refs, onChange, onCommit, autoFocus, id }: {
+  field: FieldDef; value: any; refs?: Record<string, Ref>; onChange: (v: any) => void; onCommit?: () => void; autoFocus?: boolean; id?: string;
 }) {
   const key = (e: React.KeyboardEvent) => { if (e.key === "Enter" && field.type !== "long_text") onCommit?.(); };
-  const common = { className: inputClass, autoFocus, onBlur: onCommit, onKeyDown: key };
+  const common = { id, className: inputClass, autoFocus, onBlur: onCommit, onKeyDown: key };
   switch (field.type) {
     case "long_text":
       return <textarea {...common} className={cn(inputClass, "h-auto min-h-[72px] py-2")} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />;
@@ -134,18 +135,18 @@ export function FieldInput({ field, value, refs, onChange, onCommit, autoFocus }
       return <input {...common} type="date" value={value ? String(value).slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || null)} />;
     case "boolean":
       return (
-        <Select autoFocus={autoFocus} defaultOpen={autoFocus && !!onCommit} onClose={onCommit} value={value === true ? "true" : value === false ? "false" : ""} clearable="Not set"
+        <Select id={id} autoFocus={autoFocus} defaultOpen={autoFocus && !!onCommit} onClose={onCommit} value={value === true ? "true" : value === false ? "false" : ""} clearable="Not set"
           options={[{ value: "true", label: "Yes" }, { value: "false", label: "No" }]} onChange={(v) => onChange(v === "" ? null : v === "true")} />
       );
     case "select":
       return (
-        <Select autoFocus={autoFocus} defaultOpen={autoFocus && !!onCommit} onClose={onCommit} value={value ?? ""} clearable="None"
+        <Select id={id} autoFocus={autoFocus} defaultOpen={autoFocus && !!onCommit} onClose={onCommit} value={value ?? ""} clearable="None"
           options={(field.options.choices ?? []).map((c) => ({ value: c.value, label: c.label, dot: dot(c.color) }))} onChange={(v) => onChange(v || null)} />
       );
     case "multi_select":
       return <ChoiceToggles field={field} value={value ?? []} onChange={onChange} />;
     case "relation":
-      return <RelationPicker field={field} value={value} refs={refs} onChange={onChange} />;
+      return <RelationPicker id={id} field={field} value={value} refs={refs} onChange={onChange} />;
     default:
       return <input {...common} type={field.type === "email" ? "email" : "text"} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />;
   }

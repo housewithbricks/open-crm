@@ -3,9 +3,12 @@ import { twMerge } from "tailwind-merge";
 export const fmtMoney = (n: number, currency = "USD") =>
   new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 }).format(n);
 
-/** Compact money for headline numbers: $578K, $1.2M. */
-export const fmtMoneyCompact = (n: number, currency = "USD") =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency, notation: n >= 100_000 ? "compact" : "standard", maximumFractionDigits: n >= 100_000 ? 1 : 0 }).format(n);
+/**
+ * Compact money for headline numbers: $578K, $1.2M. Pass `compact` to format a whole list or
+ * axis the same way (e.g. compact for every value once the largest is 100K or more).
+ */
+export const fmtMoneyCompact = (n: number, currency = "USD", compact = Math.abs(n) >= 100_000) =>
+  new Intl.NumberFormat(undefined, { style: "currency", currency, notation: compact ? "compact" : "standard", maximumFractionDigits: compact ? 1 : 0 }).format(n);
 
 export function fmtDate(v: string) {
   const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? v + "T00:00:00" : v);
@@ -13,6 +16,12 @@ export function fmtDate(v: string) {
   const sameYear = d.getFullYear() === new Date().getFullYear();
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
 }
+
+/**
+ * A date field's value. Date fields hold YYYY-MM-DD; older values may be timestamps, whose
+ * date part is the stored day. Either way the day shows as stored, in every timezone.
+ */
+export const fmtDay = (v: string) => fmtDate(/^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : v);
 
 export function timeAgo(v: string) {
   const s = (Date.now() - +new Date(v)) / 1000;

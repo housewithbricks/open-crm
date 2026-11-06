@@ -1,8 +1,8 @@
 import { json, sql, type Db } from "../db.js";
 import { deleteActivity, restoreActivity, revertActivityUpdate } from "./activities.js";
 import { archiveRecord, restoreRecord, revertRecordUpdate } from "./records.js";
-import { applyDestructive, getField, getObject, invalidateSchema, updateField, writeObject } from "./schema.js";
-import { audit } from "./audit.js";
+import { applyDestructive, getField, getObject, invalidateSchema, lockField, updateField, writeObject } from "./schema.js";
+import { audit, transaction } from "./audit.js";
 import { CrmError, notFound, type Actor, type ObjectType } from "./types.js";
 
 export const UNDOABLE = new Set([
@@ -52,7 +52,7 @@ export async function undoEntry(actor: Actor, id: string, force = false) {
   };
   const inTx = async (fn: (tx: Db) => Promise<unknown>) => {
     try {
-      await sql.begin(async (tx) => {
+      await transaction(async (tx) => {
         await markUndone(tx);
         await fn(tx);
       });
@@ -159,19 +159,24 @@ async function undoFieldUpdate(actor: Actor, e: Entry, force: boolean) {
     return;
   }
 
-  const current: Record<string, unknown> = { label: f.label, description: f.description, required: f.required, position: f.position, choices: f.options.choices ?? [] };
-  const keys = Object.keys(after).filter((k) => k in current);
-  const drifted = keys.filter((k) => !same(current[k], after[k]));
-  if (drifted.length && !force) {
-    throw new CrmError(`This field changed again since this edit (${drifted.join(", ")}). Undo anyway to overwrite it.`, 409, { conflict: drifted });
+  try {
+    await transaction(async (tx) => {
+      // Compare against the locked, current row, not the cached schema.
+      const cur = await lockField(tx, f.id);
+      const current: Record<string, unknown> = { label: cur.label, description: cur.description, required: cur.required, position: cur.position, choices: cur.options.choices ?? [] };
+      const keys = Object.keys(after).filter((k) => k in current);
+      const drifted = keys.filter((k) => !same(current[k], after[k]));
+      if (drifted.length && !force) {
+        throw new CrmError(`This field changed again since this edit (${drifted.join(", ")}). Undo anyway to overwrite it.`, 409, { conflict: drifted });
+      }
+      const next = { ...current, ...Object.fromEntries(keys.map((k) => [k, before[k]])) } as typeof current;
+      await tx`update field_defs set label = ${next.label as string}, description = ${next.description as string},
+        required = ${next.required as boolean}, position = ${next.position as number},
+        options = ${json(keys.includes("choices") ? { ...cur.options, choices: next.choices } : cur.options)}::jsonb where id = ${f.id}`;
+      await audit(tx, actor, "field.update", e.object_slug, f.id,
+        Object.fromEntries(keys.map((k) => [k, current[k]])), Object.fromEntries(keys.map((k) => [k, next[k]])));
+    });
+  } finally {
+    invalidateSchema();
   }
-  const next = { ...current, ...Object.fromEntries(keys.map((k) => [k, before[k]])) } as typeof current;
-  await sql.begin(async (tx) => {
-    await tx`update field_defs set label = ${next.label as string}, description = ${next.description as string},
-      required = ${next.required as boolean}, position = ${next.position as number},
-      options = ${json(keys.includes("choices") ? { ...f.options, choices: next.choices } : f.options)}::jsonb where id = ${f.id}`;
-    await audit(tx, actor, "field.update", e.object_slug, f.id,
-      Object.fromEntries(keys.map((k) => [k, current[k]])), Object.fromEntries(keys.map((k) => [k, next[k]])));
-  });
-  invalidateSchema();
 }

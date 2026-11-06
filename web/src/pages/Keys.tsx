@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Table, Td, Th, Tr } from "../components/table";
 import { Button, Card, Copyable, ErrorBox, Hint, Input, Label, Modal, ModalActions, PageHead, Segmented } from "../components/ui";
 import { api, invalidateAll, type ApiKey } from "../lib/api";
@@ -130,6 +130,7 @@ function ConnectGuide({ url, keyText }: { url: string; keyText: string }) {
 }
 
 function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated: (k: ApiKey & { key: string }) => void }) {
+  const id = useId();
   const [name, setName] = useState("Claude");
   const [scopes, setScopes] = useState(["read", "write", "schema"]);
   const create = useMutation({
@@ -139,16 +140,18 @@ function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   return (
     <Modal title="New API key" onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
-        <Label>Name</Label>
-        <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+        <Label htmlFor={`${id}-name`}>Name</Label>
+        <Input id={`${id}-name`} autoFocus value={name} onChange={(e) => setName(e.target.value)} />
         <Hint>Shown as the author of this agent's changes.</Hint>
-        <Label>Permissions</Label>
+        <Label id={`${id}-scopes`}>Permissions</Label>
+        <div role="group" aria-labelledby={`${id}-scopes`}>
         {SCOPES.map((s) => (
           <label key={s.id} className="flex cursor-pointer items-start gap-2 py-1">
             <input type="checkbox" className="square mt-0.5" checked={scopes.includes(s.id)} onChange={(e) => setScopes((cur) => (e.target.checked ? [...cur, s.id] : cur.filter((x) => x !== s.id)))} />
             <span><span className="font-medium">{s.label}</span><br /><span className="text-muted">{s.hint}</span></span>
           </label>
         ))}
+        </div>
         <ErrorBox error={create.error} />
         <ModalActions>
           <Button onClick={onClose}>Cancel</Button>

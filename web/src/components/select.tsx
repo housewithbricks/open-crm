@@ -24,8 +24,10 @@ const Chevron = ({ open }: { open: boolean }) => (
  * (arrows, Enter, Esc, type-to-jump). The menu is portalled so modals don't clip it.
  */
 export function Select<T extends string = string>({
-  value, options, onChange, placeholder = "Select…", size = "md", width, ariaLabel, clearable, autoFocus, className, defaultOpen, onClose,
+  value, options, onChange, placeholder = "Select…", size = "md", width, ariaLabel, clearable, autoFocus, className, defaultOpen, onClose, id,
 }: {
+  /** The button's id, for a <label htmlFor>. */
+  id?: string;
   value: T | "" | null | undefined;
   options: SelectOption<T>[];
   onChange: (v: T | "") => void;
@@ -118,6 +120,7 @@ export function Select<T extends string = string>({
     <>
       <button
         ref={btn}
+        id={id}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}

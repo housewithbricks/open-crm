@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { api, invalidateAll, type Choice, type FieldDef, type FieldType, type ObjectType } from "../lib/api";
 import { cn, dot, objColor, tint } from "../lib/format";
 import { useSchema } from "../lib/schema";
@@ -147,7 +147,7 @@ function OptionRow({ label, color, removed, onLabel, onColor, onRemove, removeTe
   return (
     <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b border-line py-1.5 last:border-0">
       <button type="button" aria-label="Change color" onClick={() => setPicking(!picking)} className="size-3.5 rounded-full" style={{ background: dot(color) }} />
-      <input className={cn(inputClass, "h-7", removed && "text-faint line-through")} value={label} disabled={removed} onChange={(e) => onLabel(e.target.value)} />
+      <input aria-label="Option" className={cn(inputClass, "h-7", removed && "text-faint line-through")} value={label} disabled={removed} onChange={(e) => onLabel(e.target.value)} />
       <Button size="sm" variant="ghost" aria-label="Remove option" onClick={onRemove}>{removeText}</Button>
       {picking && <div className="col-span-3 pt-1 pb-0.5 pl-[22px]"><ColorSwatches value={color} onChange={(c) => { onColor(c); setPicking(false); }} /></div>}
     </div>
@@ -163,7 +163,7 @@ function NewOptionRow({ onAdd, placeholder }: { onAdd: (labels: string[]) => voi
   return (
     <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 py-1.5">
       <span className="size-3.5 rounded-full bg-line-2" />
-      <input className={cn(inputClass, "h-7")} placeholder={placeholder} value={text} onChange={(e) => setText(e.target.value)}
+      <input aria-label="New option" className={cn(inputClass, "h-7")} placeholder={placeholder} value={text} onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
       <Button size="sm" disabled={!text.trim()} onClick={add}>Add</Button>
     </div>
@@ -171,6 +171,7 @@ function NewOptionRow({ onAdd, placeholder }: { onAdd: (labels: string[]) => voi
 }
 
 export function AddFieldModal({ obj, onClose }: { obj: ObjectType; onClose: () => void }) {
+  const id = useId();
   const { data: schema } = useSchema();
   const [type, setType] = useState<FieldType | null>(null);
   const [label, setLabel] = useState("");
@@ -222,13 +223,13 @@ export function AddFieldModal({ obj, onClose }: { obj: ObjectType; onClose: () =
           <Button size="sm" variant="ghost" onClick={() => setType(null)}>Change type</Button>
         </div>
 
-        <Label>Name</Label>
-        <Input autoFocus placeholder={info.placeholder} value={label} onChange={(e) => setLabel(e.target.value)} />
+        <Label htmlFor={`${id}-name`}>Name</Label>
+        <Input id={`${id}-name`} autoFocus placeholder={info.placeholder} value={label} onChange={(e) => setLabel(e.target.value)} />
 
         {isSelect && (
           <>
-            <Label>Options</Label>
-            <div className="rounded-lg border border-line px-2.5 py-0.5">
+            <Label id={`${id}-options`}>Options</Label>
+            <div role="group" aria-labelledby={`${id}-options`} className="rounded-lg border border-line px-2.5 py-0.5">
               {opts.map((o, i) => (
                 <OptionRow key={i} label={o.label} color={o.color}
                   onLabel={(v) => setOpts((x) => x.map((y, j) => (j === i ? { ...y, label: v } : y)))}
@@ -243,8 +244,8 @@ export function AddFieldModal({ obj, onClose }: { obj: ObjectType; onClose: () =
 
         {type === "relation" && (
           <>
-            <Label>Links to</Label>
-            <Select value={target} placeholder="Choose an object…" ariaLabel="Links to" onChange={setTarget}
+            <Label htmlFor={`${id}-target`}>Links to</Label>
+            <Select id={`${id}-target`} value={target} placeholder="Choose an object…" ariaLabel="Links to" onChange={setTarget}
               options={(schema?.objects ?? []).map((o) => ({ value: o.slug, label: o.label_plural, icon: <ObjIcon slug={o.slug} size={16} /> }))} />
             <SwitchRow title="Allow several" hint="e.g. a deal with several contacts" checked={multiple} onChange={setMultiple} />
           </>
@@ -252,13 +253,13 @@ export function AddFieldModal({ obj, onClose }: { obj: ObjectType; onClose: () =
 
         {type === "currency" && (
           <>
-            <Label>Currency</Label>
-            <Select width={160} value={currency} ariaLabel="Currency" onChange={(v) => v && setCurrency(v)} options={CURRENCIES.map((c) => ({ value: c, label: c }))} />
+            <Label htmlFor={`${id}-currency`}>Currency</Label>
+            <Select id={`${id}-currency`} width={160} value={currency} ariaLabel="Currency" onChange={(v) => v && setCurrency(v)} options={CURRENCIES.map((c) => ({ value: c, label: c }))} />
           </>
         )}
 
-        <Label>Description <span className="font-normal text-muted">optional</span></Label>
-        <Input placeholder="What goes here? Helps you and your agents fill it in." value={description} onChange={(e) => setDescription(e.target.value)} />
+        <Label htmlFor={`${id}-desc`}>Description <span className="font-normal text-muted">optional</span></Label>
+        <Input id={`${id}-desc`} placeholder="What goes here? Helps you and your agents fill it in." value={description} onChange={(e) => setDescription(e.target.value)} />
 
         <div className="mt-3.5 border-t border-line">
           <SwitchRow title="Required" hint="Every record must have a value" checked={required} onChange={setRequired} />
@@ -280,6 +281,7 @@ export function AddFieldModal({ obj, onClose }: { obj: ObjectType; onClose: () =
 type OptDraft = Choice & { removed?: boolean; isNew?: boolean };
 
 function EditFieldModal({ obj, field, onClose }: { obj: ObjectType; field: FieldDef; onClose: () => void }) {
+  const id = useId();
   const [label, setLabel] = useState(field.label);
   const [description, setDescription] = useState(field.description);
   const [required, setRequired] = useState(field.required);
@@ -311,10 +313,10 @@ function EditFieldModal({ obj, field, onClose }: { obj: ObjectType; field: Field
   return (
     <Modal title={`Edit “${field.label}”`} onClose={onClose}>
       <p className="m-0 text-muted">{TYPE_LABEL[field.type]} · key <code>{field.key}</code> · added by <Who name={field.created_by} /></p>
-      <Label>Name</Label>
-      <Input value={label} onChange={(e) => setLabel(e.target.value)} />
-      <Label>Description</Label>
-      <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Helps you and your agents fill it in" />
+      <Label htmlFor={`${id}-name`}>Name</Label>
+      <Input id={`${id}-name`} value={label} onChange={(e) => setLabel(e.target.value)} />
+      <Label htmlFor={`${id}-desc`}>Description</Label>
+      <Input id={`${id}-desc`} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Helps you and your agents fill it in" />
       {field.key !== obj.primary_field && (
         <div className="mt-3.5 border-t border-line">
           <SwitchRow title="Required" hint="Every record must have a value" checked={required} onChange={setRequired} />
@@ -322,11 +324,11 @@ function EditFieldModal({ obj, field, onClose }: { obj: ObjectType; field: Field
       )}
       {isSelect && (
         <>
-          <Label>
+          <Label id={`${id}-options`}>
             Options <span className="font-normal text-muted">· click a dot to change its color</span>
             {field.type === "select" && <button type="button" className="float-right font-normal text-accent hover:underline" onClick={() => setStages(true)}>Edit as pipeline stages →</button>}
           </Label>
-          <div className="rounded-lg border border-line px-2.5 py-0.5">
+          <div role="group" aria-labelledby={`${id}-options`} className="rounded-lg border border-line px-2.5 py-0.5">
             {opts.map((o, i) => (
               <OptionRow key={i} label={o.label} color={o.color ?? "gray"} removed={o.removed} removeText={o.removed ? "Keep" : "Remove"}
                 onLabel={(v) => setOpt(i, { label: v })} onColor={(c) => setOpt(i, { color: c })} onRemove={() => setOpt(i, { removed: !o.removed })} />

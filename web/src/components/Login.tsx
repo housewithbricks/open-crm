@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api, invalidateAll } from "../lib/api";
 import { Button, ErrorBox, Input, Label, Mark } from "./ui";
 
 export default function Login() {
+  const id = useId();
   const [pw, setPw] = useState("");
   const [err, setErr] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -23,8 +24,8 @@ export default function Login() {
         }}>
         <Mark size={28} />
         <h1 className="mt-4 mb-1 text-lg">Sign in to Open CRM</h1>
-        <Label>Password</Label>
-        <Input type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
+        <Label htmlFor={id}>Password</Label>
+        <Input id={id} type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
         <ErrorBox error={err} />
         <Button type="submit" variant="primary" className="mt-4 h-[34px] w-full" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button>
       </form>

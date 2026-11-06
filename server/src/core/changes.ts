@@ -1,6 +1,6 @@
 import { json, sql } from "../db.js";
-import { audit } from "./audit.js";
-import { applyDestructive, describeChange, type DestructiveChange } from "./schema.js";
+import { audit, transaction } from "./audit.js";
+import { applyDestructive, applyDestructiveIn, describeChange, invalidateSchema, type DestructiveChange } from "./schema.js";
 import { CrmError, notFound, requireScope, userActor, type Actor } from "./types.js";
 
 export type ChangeRequest = {
@@ -39,12 +39,20 @@ export async function listChanges(status?: string) {
     ${status ? sql`where status = ${status}` : sql``} order by created_at desc limit 200`;
 }
 
+/** Approve or reject a pending request. The row is locked, so a request is decided once; a second decision is a 409. */
 export async function decideChange(id: string, approve: boolean) {
-  const [cr] = await sql<ChangeRequest[]>`select * from change_requests where id = ${id}`;
-  if (!cr) throw notFound("Change request");
-  if (cr.status !== "pending") throw new CrmError(`Already ${cr.status}`, 409);
-  if (approve) await applyDestructive({ ...userActor, name: `You (approving ${cr.actor_name})` }, cr.payload);
-  await sql`update change_requests set status = ${approve ? "approved" : "rejected"}, decided_at = now() where id = ${id}`;
-  await audit(sql, userActor, approve ? "change.approve" : "change.reject", cr.payload.object, id, null, null);
-  return { ...cr, status: approve ? "approved" : "rejected" };
+  const status = approve ? "approved" : "rejected";
+  try {
+    return await transaction(async (tx) => {
+      const [cr] = await tx<ChangeRequest[]>`select * from change_requests where id = ${id} for update`;
+      if (!cr) throw notFound("Change request");
+      if (cr.status !== "pending") throw new CrmError(`Already ${cr.status}`, 409);
+      if (approve) await applyDestructiveIn(tx, { ...userActor, name: `You (approving ${cr.actor_name})` }, cr.payload);
+      await tx`update change_requests set status = ${status}, decided_at = now() where id = ${id}`;
+      await audit(tx, userActor, approve ? "change.approve" : "change.reject", cr.payload.object, id, null, null);
+      return { ...cr, status };
+    });
+  } finally {
+    invalidateSchema();
+  }
 }

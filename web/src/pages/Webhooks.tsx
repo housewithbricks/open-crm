@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Table, Td, Th, Tr } from "../components/table";
 import { Button, ErrorBox, Input, Label, Modal, ModalActions, PageHead, refClass } from "../components/ui";
 import { api, invalidateAll, type Webhook } from "../lib/api";
@@ -66,6 +66,7 @@ export default function Webhooks() {
 }
 
 function NewWebhookModal({ events: allEvents, onClose, onCreated }: { events: string[]; onClose: () => void; onCreated: (id: string) => void }) {
+  const id = useId();
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState<string[]>(["*"]);
   const all = events.includes("*");
@@ -77,9 +78,10 @@ function NewWebhookModal({ events: allEvents, onClose, onCreated }: { events: st
   return (
     <Modal title="New webhook" onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
-        <Label>URL</Label>
-        <Input autoFocus placeholder="https://example.com/hooks/crm" value={url} onChange={(e) => setUrl(e.target.value)} />
-        <Label>Events</Label>
+        <Label htmlFor={`${id}-url`}>URL</Label>
+        <Input id={`${id}-url`} autoFocus placeholder="https://example.com/hooks/crm" value={url} onChange={(e) => setUrl(e.target.value)} />
+        <Label id={`${id}-events`}>Events</Label>
+        <div role="group" aria-labelledby={`${id}-events`}>
         <label className={check}><input type="checkbox" className="square" checked={all} onChange={(e) => setEvents(e.target.checked ? ["*"] : [])} /> All events</label>
         {!all && allEvents.map((ev) => (
           <label key={ev} className={check}>
@@ -87,6 +89,7 @@ function NewWebhookModal({ events: allEvents, onClose, onCreated }: { events: st
             <code>{ev}</code>
           </label>
         ))}
+        </div>
         <ErrorBox error={create.error} />
         <ModalActions>
           <Button onClick={onClose}>Cancel</Button>

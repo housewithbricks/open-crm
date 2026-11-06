@@ -228,6 +228,20 @@ const migrations: { id: number; name: string; sql: string }[] = [
       create index activities_open_tasks_idx on activities (due_at) where kind = 'task' and done_at is null and deleted_at is null;
     `,
   },
+  {
+    id: 7,
+    name: "date_fields_as_days",
+    sql: /* sql */ `
+      -- Date fields hold YYYY-MM-DD. Older writes stored some as full timestamps; keep their
+      -- date part, which is what filters and the dashboard already compared on.
+      update records r set data = r.data || (
+        select jsonb_object_agg(f.key, left(r.data->>f.key, 10)) from field_defs f
+        where f.object_type_id = r.object_type_id and f.type = 'date' and r.data->>f.key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T')
+      where exists (
+        select 1 from field_defs f
+        where f.object_type_id = r.object_type_id and f.type = 'date' and r.data->>f.key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T');
+    `,
+  },
 ];
 
 export async function migrate() {

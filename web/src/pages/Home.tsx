@@ -4,7 +4,7 @@ import { Fragment, type ReactNode } from "react";
 import { BarRows, StackedColumns, youSeriesColor, type Series } from "../components/charts";
 import { Card, CardHead, Link2, ObjIcon } from "../components/ui";
 import { api, type Filter } from "../lib/api";
-import { dot, fmtMoney, fmtMoneyCompact } from "../lib/format";
+import { dot, fmtMoneyCompact } from "../lib/format";
 import { useSchema } from "../lib/schema";
 import { useAppearance } from "../lib/theme";
 
@@ -73,6 +73,9 @@ export default function Home() {
   const closedValues = p?.stages.filter((s) => s.kind !== "open" && !s.unknown).map((s) => s.value) ?? [];
   const isUnknown = (v: string) => !!p?.stages.find((s) => s.value === v)?.unknown;
   const money = (n: number) => fmtMoneyCompact(n, p?.currency);
+  // One format per list: compact for every stage once the largest reaches 100K.
+  const openStages = p?.stages.filter((s) => s.kind === "open") ?? [];
+  const stagesCompact = Math.max(0, ...openStages.map((s) => Math.abs(s.amount))) >= 100_000;
 
   const summary: { text: string; go: () => void }[] = [];
   if (d?.tasks.overdue) summary.push({ text: `${d.tasks.overdue} overdue ${d.tasks.overdue === 1 ? "task" : "tasks"}`, go: () => navigate({ to: "/tasks" }) });
@@ -138,11 +141,11 @@ export default function Home() {
             <CardHead title={<><ObjIcon slug={p.object} size={18} />Pipeline by stage</>}
               action={<Link2 onClick={() => navigate({ to: "/o/$slug", params: { slug: p.object }, search: { k: "board" } })}>Open board →</Link2>} />
             <BarRows
-              format={(v) => money(v)}
+              format={(v) => fmtMoneyCompact(v, p.currency, stagesCompact)}
               onPick={(stage) => stage && isUnknown(stage)
                 ? navigate({ to: "/o/$slug", params: { slug: p.object }, search: { k: "board" } })
                 : openList(p.object, stage ? [{ field: p.stage_field, op: "in", value: [stage] }] : [{ field: p.stage_field, op: "is_empty" }])}
-              rows={p.stages.filter((s) => s.kind === "open").map((s) => ({
+              rows={openStages.map((s) => ({
                 key: s.value, value: s.amount, color: dot(s.color),
                 detail: `${s.count} ${s.count === 1 ? "deal" : "deals"}${s.probability !== null ? ` · ${s.probability}%` : ""}`,
                 label: <><i className="size-2 flex-none rounded-full" style={{ background: dot(s.color) }} /><span className={s.unknown ? "text-muted italic" : undefined} title={s.unknown ? "No longer an option" : undefined}>{s.label}</span></>,
@@ -176,7 +179,7 @@ export default function Home() {
               <StackedColumns height={170} ariaLabel="New pipeline value per week"
                 data={p.weekly_created.map((w) => ({ key: w.week, value: w.amount, deals: w.n }))}
                 series={[{ key: "value", label: "New value", color: youColor }]}
-                formatKey={dayLabel} formatValue={(v) => (v >= 1000 ? fmtMoneyCompact(v, p.currency) : fmtMoney(v, p.currency))} />
+                formatKey={dayLabel} formatValue={(v) => fmtMoneyCompact(v, p.currency, true)} />
             ) : (
               <EmptyChart>No new {p.label.toLowerCase()} in the last 8 weeks.</EmptyChart>
             )}

@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import FieldsTab, { AddFieldModal } from "../components/FieldsTab";
 import FilterBar, { isComplete } from "../components/FilterBar";
 import { FieldInput, FieldValue } from "../components/fields";
@@ -354,6 +354,7 @@ function BoardView({ obj, cfg }: { obj: ObjectType; cfg: ViewConfig }) {
 }
 
 function NewRecordModal({ obj, onClose }: { obj: ObjectType; onClose: () => void }) {
+  const id = useId();
   const [data, setData] = useState<Record<string, any>>({});
   const openRecord = useOpenRecord();
   const create = useMutation({
@@ -365,8 +366,8 @@ function NewRecordModal({ obj, onClose }: { obj: ObjectType; onClose: () => void
       <form onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
         {obj.fields.map((f, i) => (
           <div key={f.key}>
-            <Label>{f.label}{f.required && " *"}</Label>
-            <FieldInput field={f} value={data[f.key]} autoFocus={i === 0} onChange={(v) => setData((d) => ({ ...d, [f.key]: v }))} />
+            <Label htmlFor={`${id}-${f.key}`}>{f.label}{f.required && " *"}</Label>
+            <FieldInput id={`${id}-${f.key}`} field={f} value={data[f.key]} autoFocus={i === 0} onChange={(v) => setData((d) => ({ ...d, [f.key]: v }))} />
           </div>
         ))}
         <ErrorBox error={create.error} />

@@ -78,26 +78,32 @@ api.post("/login", async (c) => {
   const now = Date.now();
   const ip = clientIp(c);
   const mine = fresh(attempts.get(ip), now);
-  everyone = fresh(everyone, now);
+  const all = (everyone = fresh(everyone, now));
   if (mine.until > now) throw new CrmError("Too many attempts, try again in a few minutes", 429);
   // A global cap too, so spreading guesses over many addresses doesn't help.
-  if (everyone.until > now) throw new CrmError("Too many failed sign-ins recently, try again in a few minutes", 429);
-  const { password } = await c.req.json<{ password: string }>();
+  if (all.until > now) throw new CrmError("Too many failed sign-ins recently, try again in a few minutes", 429);
+  const failed = () => {
+    fail(mine, PER_IP_MAX, now);
+    fail(all, config.loginGlobalMax, now);
+    attempts.delete(ip); // re-insert so the map stays ordered by last failure
+    attempts.set(ip, mine);
+    prune(now);
+  };
+  const body = await c.req.json().catch(() => null);
+  const password = body?.password;
+  if (typeof password !== "string" || !password) {
+    failed();
+    throw new CrmError("password is required", 400);
+  }
   try {
-    const { token, maxAge } = await login(password ?? "");
+    const { token, maxAge } = await login(password);
     attempts.delete(ip);
     // Secure only over HTTPS (directly or behind a proxy), so plain-HTTP LAN installs can still sign in.
     const https = new URL(c.req.url).protocol === "https:" || c.req.header("x-forwarded-proto")?.split(",")[0].trim() === "https";
     setCookie(c, COOKIE, token, { httpOnly: true, sameSite: "Lax", secure: https, path: "/", maxAge });
     return c.json({ ok: true });
   } catch (e) {
-    if (e instanceof CrmError && e.status === 401) {
-      fail(mine, PER_IP_MAX, now);
-      fail(everyone, config.loginGlobalMax, now);
-      attempts.delete(ip); // re-insert so the map stays ordered by last failure
-      attempts.set(ip, mine);
-      prune(now);
-    }
+    if (e instanceof CrmError && e.status === 401) failed();
     throw e;
   }
 });

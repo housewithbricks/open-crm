@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { AuditEntry, FieldDef, ObjectType } from "./api";
-import { fmtDate, fmtMoney } from "./format";
+import { fmtDay, fmtMoney } from "./format";
 
 /** Human-readable value for a field, for change summaries. */
 export function showValue(f: FieldDef | undefined, v: any): string {
@@ -11,7 +11,7 @@ export function showValue(f: FieldDef | undefined, v: any): string {
   }
   if (f?.type === "relation") return "a linked record";
   if (f?.type === "currency") return fmtMoney(Number(v), f.options.currency);
-  if (f?.type === "date") return fmtDate(v);
+  if (f?.type === "date") return fmtDay(String(v));
   if (typeof v === "boolean") return v ? "Yes" : "No";
   return typeof v === "object" ? JSON.stringify(v) : String(v);
 }

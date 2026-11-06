@@ -1,9 +1,27 @@
-import { json, sql, type Sql } from "../db.js";
+import type postgres from "postgres";
+import { json, sql, type Db } from "../db.js";
 import type { Actor } from "./types.js";
-import { emit, eventForAction } from "./webhooks.js";
+import { emit, eventForAction, type EventPayload } from "./webhooks.js";
+
+/** Webhook events from audits inside a `transaction`, held until it commits. */
+const pending = new WeakMap<object, EventPayload[]>();
+
+/**
+ * sql.begin, but webhooks for audits made inside it are sent only once it commits,
+ * and dropped if it rolls back.
+ */
+export async function transaction<T>(fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> {
+  const queue: EventPayload[] = [];
+  const result = await sql.begin((tx) => {
+    pending.set(tx, queue);
+    return fn(tx);
+  });
+  queue.forEach(emit);
+  return result as T;
+}
 
 export async function audit(
-  db: Sql | any,
+  db: Db,
   actor: Actor,
   action: string,
   objectSlug: string | null,
@@ -17,7 +35,7 @@ export async function audit(
            returning id, created_at`;
   const event = eventForAction(action);
   if (event) {
-    emit({
+    const payload: EventPayload = {
       id: String(row.id),
       event,
       action,
@@ -27,7 +45,10 @@ export async function audit(
       before: before ?? null,
       after: after ?? null,
       at: new Date(row.created_at).toISOString(),
-    });
+    };
+    const queue = pending.get(db);
+    if (queue) queue.push(payload);
+    else emit(payload);
   }
   return row;
 }

@@ -37,7 +37,7 @@ export function LinkChips({ links, onRemove, exclude }: { links: Ref[]; onRemove
 }
 
 /** Search box that finds records across every object and adds them as links. */
-export function LinkPicker({ value, onChange, placeholder = "Link a record…" }: { value: Ref[]; onChange: (v: Ref[]) => void; placeholder?: string }) {
+export function LinkPicker({ value, onChange, placeholder = "Link a record…", id }: { value: Ref[]; onChange: (v: Ref[]) => void; placeholder?: string; id?: string }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(0);
@@ -65,7 +65,7 @@ export function LinkPicker({ value, onChange, placeholder = "Link a record…" }
   return (
     <div ref={box} className="relative flex min-w-[180px] flex-1 flex-wrap items-center gap-1">
       <LinkChips links={value} onRemove={(id) => onChange(value.filter((v) => v.id !== id))} />
-      <input value={q} placeholder={placeholder}
+      <input id={id} aria-label={id ? undefined : placeholder} value={q} placeholder={placeholder}
         className="h-[26px] min-w-[120px] flex-1 border-0 bg-transparent px-1 text-xs outline-none placeholder:text-faint"
         onChange={(e) => { setQ(e.target.value); setOpen(true); setSel(0); }}
         onFocus={() => setOpen(true)}

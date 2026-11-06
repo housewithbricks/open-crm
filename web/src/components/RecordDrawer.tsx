@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { api, invalidateAll, type FieldDef, type RecordDetail, type Ref, type TimelineItem } from "../lib/api";
-import { cn, fmtDate, timeAgo } from "../lib/format";
+import { cn, fmtDay, timeAgo } from "../lib/format";
 import { useObject } from "../lib/schema";
 import { undoEntry } from "../lib/undo";
 import { FieldInput, FieldValue } from "./fields";
@@ -153,7 +153,7 @@ function describeChange(item: Extract<TimelineItem, { type: "change" }>, fields:
     }
     if (f?.type === "relation") return "a linked record";
     if (f?.type === "currency") return Number(v).toLocaleString(undefined, { style: "currency", currency: f.options.currency ?? "USD", maximumFractionDigits: 0 });
-    if (f?.type === "date") return fmtDate(v);
+    if (f?.type === "date") return fmtDay(String(v));
     return typeof v === "object" ? JSON.stringify(v) : String(v);
   };
   switch (item.action) {
