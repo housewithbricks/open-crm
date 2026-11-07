@@ -130,7 +130,7 @@ export function FieldInput({ field, value, refs, onChange, onCommit, autoFocus, 
       return <textarea {...common} className={cn(inputClass, "h-auto min-h-[72px] py-2")} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />;
     case "number":
     case "currency":
-      return <input {...common} type="number" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} />;
+      return <input {...common} type="number" step="any" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} />;
     case "date":
       return <input {...common} type="date" value={value ? String(value).slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || null)} />;
     case "boolean":

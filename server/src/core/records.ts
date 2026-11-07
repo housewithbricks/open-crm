@@ -65,8 +65,12 @@ export function numField(key: string, col = "data") {
   return sql`(case when ${c}->>${key} ~ ${NUM_RE} then (${c}->>${key})::numeric end)`;
 }
 
-/** A boolean field, tolerant of anything that isn't a real true. */
-const boolField = (key: string) => sql`coalesce(lower(data->>${key}) in ('true', 't', 'yes', '1'), false)`;
+/** A boolean field's stored value matches yes (or, with want = false, an explicit no). Unset matches neither. */
+const boolIs = (key: string, want: boolean) =>
+  want
+    ? sql`coalesce(lower(data->>${key}) in ('true', 't', 'yes', '1'), false)`
+    : sql`coalesce(lower(data->>${key}) in ('false', 'f', 'no', '0'), false)`;
+const truthy = (v: unknown) => v === true || /^(true|t|yes|y|1)$/i.test(String(v).trim());
 
 function filterSql(obj: ObjectType, flt: Filter) {
   const op = flt.op;
@@ -120,7 +124,7 @@ function filterSql(obj: ObjectType, flt: Filter) {
       const cond = many
         ? sql`coalesce(data->${k} ? ${String(v)}, false)`
         : f.type === "boolean"
-          ? sql`${boolField(k)} = ${Boolean(v)}`
+          ? boolIs(k, truthy(v))
           : isNumeric(f) || isDate
             ? sql`coalesce(${scalar} = ${lit(v)}, false)`
             : sql`coalesce(lower(data->>${k}) = lower(${String(v)}), false)`;

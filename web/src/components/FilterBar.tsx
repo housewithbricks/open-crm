@@ -279,12 +279,12 @@ function FilterEditor({ ff, filter, onChange }: { ff: FField; filter: Filter; on
           {!isEmptyOp && (filter.op === "between" ? (
             <div className="flex gap-2">
               {[0, 1].map((i) => (
-                <input key={i} className={inputClass} type="number" placeholder={i ? "Max" : "Min"} value={String((filter.value as unknown[])?.[i] ?? "")}
+                <input key={i} className={inputClass} type="number" step="any" placeholder={i ? "Max" : "Min"} value={String((filter.value as unknown[])?.[i] ?? "")}
                   onChange={(e) => { const v = [...((filter.value as unknown[]) ?? ["", ""])]; v[i] = e.target.value === "" ? "" : Number(e.target.value); set({ value: v }); }} />
               ))}
             </div>
           ) : (
-            <input className={inputClass} type="number" autoFocus placeholder="Amount" value={String(filter.value ?? "")} onChange={(e) => set({ value: e.target.value === "" ? "" : Number(e.target.value) })} />
+            <input className={inputClass} type="number" step="any" autoFocus placeholder="Amount" value={String(filter.value ?? "")} onChange={(e) => set({ value: e.target.value === "" ? "" : Number(e.target.value) })} />
           ))}
         </>
       )}

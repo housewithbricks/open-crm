@@ -1,7 +1,8 @@
 import { twMerge } from "tailwind-merge";
 
+/** Whole amounts without cents ($48,000); amounts with cents keep them ($1,234.56). */
 export const fmtMoney = (n: number, currency = "USD") =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat(undefined, { style: "currency", currency, ...(Number.isInteger(n) ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }).format(n);
 
 /**
  * Compact money for headline numbers: $578K, $1.2M. Pass `compact` to format a whole list or

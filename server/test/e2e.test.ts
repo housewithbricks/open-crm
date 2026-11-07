@@ -1310,3 +1310,22 @@ describe("round 9 review", () => {
     assert.equal((viaMcp.data.record ?? viaMcp.data).data.step, "qualified");
   });
 });
+
+describe("round 10 review", () => {
+  it("boolean filters tell no apart from not set", async () => {
+    await rest("/objects", { body: { label: "Lead list", label_plural: "Lead lists", fields: [{ label: "Contacted", type: "boolean" }] } });
+    const mk = (name: string, contacted?: boolean) => rest("/objects/lead_lists/records", { body: { name, ...(contacted === undefined ? {} : { contacted }) } });
+    await mk("Yes one", true);
+    await mk("No one", false);
+    await mk("Unset one");
+    const names = async (value: unknown) => {
+      const f = JSON.stringify([{ field: "contacted", op: "eq", value }]);
+      return (await rest(`/objects/lead_lists/records?filters=${encodeURIComponent(f)}`)).data.records.map((r: any) => r.data.name).sort();
+    };
+    assert.deepEqual(await names(false), ["No one"]);
+    assert.deepEqual(await names("false"), ["No one"]);
+    assert.deepEqual(await names(true), ["Yes one"]);
+    const unset = JSON.stringify([{ field: "contacted", op: "is_empty" }]);
+    assert.deepEqual((await rest(`/objects/lead_lists/records?filters=${encodeURIComponent(unset)}`)).data.records.map((r: any) => r.data.name), ["Unset one"]);
+  });
+});
