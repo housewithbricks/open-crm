@@ -1269,3 +1269,23 @@ describe("round 6 review", () => {
     assert.match(r.data.error, /tags is required/);
   });
 });
+
+describe("round 7 review", () => {
+  it("conversion errors don't show stored values to keys without read", async () => {
+    await rest("/objects", { body: { label: "Lamp", fields: [{ label: "Note", type: "text" }] } });
+    const lamp = (await rest("/objects/lamps/records", { body: { name: "Secret lamp", note: "zebra-secret" } })).data;
+    const s = (await rest("/keys", { body: { name: "Schema only", scopes: ["schema"] } })).data.key;
+    const r = await rest("/objects/lamps/fields/note", { method: "PATCH", body: { type: "number" }, bearer: s });
+    assert.equal(r.status, 409);
+    assert.doesNotMatch(JSON.stringify(r.data), /zebra-secret|Secret lamp/);
+    assert.ok(!JSON.stringify(r.data).includes(lamp.id));
+    assert.match(r.data.error, /1 of 1 values/);
+    const viaMcp = await mcp("request_schema_change", { kind: "change_field_type", object: "lamps", field: "note", type: "number", reason: "x" }, s);
+    assert.ok(viaMcp.error);
+    assert.doesNotMatch(viaMcp.error, /zebra-secret/);
+    // With read, the details are still there.
+    const both = (await rest("/keys", { body: { name: "Schema reader", scopes: ["read", "schema"] } })).data.key;
+    const full = await rest("/objects/lamps/fields/note", { method: "PATCH", body: { type: "number" }, bearer: both });
+    assert.match(JSON.stringify(full.data), /zebra-secret/);
+  });
+});

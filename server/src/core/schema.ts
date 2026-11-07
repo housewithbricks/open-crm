@@ -362,7 +362,21 @@ export async function applyDestructiveIn(tx: Db, actor: Actor, c: DestructiveCha
     case "change_field_type": {
       const f = await lockField(tx, getField(obj, c.field).id);
       before = { type: f.type, options: f.options };
-      after.converted = await convertFieldType(tx, obj, f, c.type);
+      try {
+        after.converted = await convertFieldType(tx, obj, f, c.type);
+      } catch (e) {
+        // Conversion errors quote stored values and record ids; a key without "read" gets only the counts.
+        if (e instanceof CrmError && e.status === 409 && !actor.scopes.includes("read")) {
+          const d = e.details as { failed?: number; total?: number } | undefined;
+          throw new CrmError(
+            `Can't change ${obj.slug}.${f.key} to ${c.type}: ${d?.failed ? `${d.failed} of ${d.total} values` : "some existing values"} ` +
+              `can't be converted or would clash. A key with the read scope sees which. Nothing was changed.`,
+            409,
+            d?.failed ? { failed: d.failed, total: d.total } : undefined,
+          );
+        }
+        throw e;
+      }
       break;
     }
     case "remove_choices": {
