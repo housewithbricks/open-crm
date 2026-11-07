@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import http from "node:http";
 import https from "node:https";
@@ -34,6 +34,7 @@ export function eventForAction(action: string): WebhookEvent | null {
 type Hook = { id: string; url: string; events: string[]; secret: string };
 
 export type EventPayload = {
+  /** Stable per event: the same on every retry, so receivers can use it to drop duplicates. */
   id: string;
   event: WebhookEvent;
   action: string;
@@ -135,7 +136,7 @@ function post(url: string, headers: Record<string, string>, body: string) {
   });
 }
 
-async function deliver(hook: Hook, payload: unknown, attempt = 1): Promise<{ status: number | null; error: string | null }> {
+async function deliver(hook: Hook, payload: unknown, attempt = 1, maxAttempts = 3): Promise<{ status: number | null; error: string | null }> {
   const body = JSON.stringify(payload);
   let status: number | null = null;
   let error: string | null = null;
@@ -145,6 +146,8 @@ async function deliver(hook: Hook, payload: unknown, attempt = 1): Promise<{ sta
       "content-type": "application/json",
       "user-agent": "OpenCRM-Webhooks/1",
       "x-opencrm-event": (payload as EventPayload).event,
+      "x-opencrm-event-id": (payload as EventPayload).id,
+      "x-opencrm-attempt": String(attempt),
       "x-opencrm-signature": sign(hook.secret, body),
     }, body);
     if (status < 200 || status >= 300) error = `HTTP ${status}`;
@@ -152,9 +155,9 @@ async function deliver(hook: Hook, payload: unknown, attempt = 1): Promise<{ sta
     error = (e as Error).message;
     retry = (e as { code?: string }).code !== "EBLOCKED";
   }
-  if (error && retry && attempt < 3) {
+  if (error && retry && attempt < maxAttempts) {
     await new Promise((r) => setTimeout(r, attempt * 2000));
-    return deliver(hook, payload, attempt + 1);
+    return deliver(hook, payload, attempt + 1, maxAttempts);
   }
   await sql`update webhooks set last_status = ${status}, last_error = ${error}, last_at = now() where id = ${hook.id}`;
   return { status, error };
@@ -212,7 +215,7 @@ export async function testWebhook(id: string) {
   const [hook] = await sql<Hook[]>`select id, url, events, secret from webhooks where id = ${id}`;
   if (!hook) throw notFound("Webhook");
   return deliver(hook, {
-    id: "test",
+    id: `test_${randomUUID()}`,
     event: "ping",
     action: "ping",
     actor: { type: "user", name: "You" },
@@ -222,5 +225,5 @@ export async function testWebhook(id: string) {
     after: { message: "Hello from Open CRM" },
     source: null,
     at: new Date().toISOString(),
-  }, 3);
+  }, 1, 1);
 }

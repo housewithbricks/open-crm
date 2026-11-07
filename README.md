@@ -81,9 +81,13 @@ Tests boot the real server against a fresh `opencrm_test` database, created from
 
 ## Webhooks
 
-**Settings → Webhooks.** Each delivery is a `POST` with JSON `{ event, action, actor, object, target_id, before, after, source, at }` (`source` is the `{url, label}` link a write was based on, or `null`) and these headers:
+**Settings → Webhooks.** Each delivery is a `POST` with JSON `{ id, event, action, actor, object, target_id, before, after, source, at }` (`source` is the `{url, label}` link a write was based on, or `null`) and these headers:
 - `x-opencrm-event`
+- `x-opencrm-event-id`: the same as `id`
+- `x-opencrm-attempt`: `1`, `2` or `3`
 - `x-opencrm-signature: sha256=<HMAC-SHA256 of the raw body with the endpoint secret>`
+
+`id` is unique per event and stays the same on every retry. If a delivery is retried after a lost response, you get the same event again, so use `id` as an idempotency key (for example a unique key on the jobs an agent starts) to avoid acting twice.
 
 Events: `record.created`, `record.updated`, `record.archived`, `record.restored`, `activity.created`, `schema.changed`, `change.requested`, `change.decided`. Failed deliveries are retried twice. Redirects are not followed. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10) are refused unless `WEBHOOK_ALLOW_PRIVATE=1`; localhost and private networks are allowed.
 

@@ -466,23 +466,31 @@ describe("webhooks", () => {
   it("delivers signed events", async () => {
     const { createServer } = await import("node:http");
     const { createHmac } = await import("node:crypto");
-    const got: { event: string; sig: string; body: string }[] = [];
+    const got: { event: string; eventId: string; attempt: string; sig: string; body: string }[] = [];
+    let fail = 1;
     const recv = createServer((req, res) => {
       let b = "";
       req.on("data", (d) => (b += d));
       req.on("end", () => {
-        got.push({ event: req.headers["x-opencrm-event"] as string, sig: req.headers["x-opencrm-signature"] as string, body: b });
+        got.push({ event: req.headers["x-opencrm-event"] as string, eventId: req.headers["x-opencrm-event-id"] as string,
+                   attempt: req.headers["x-opencrm-attempt"] as string, sig: req.headers["x-opencrm-signature"] as string, body: b });
+        res.statusCode = fail-- > 0 ? 500 : 200;
         res.end("ok");
       });
     }).listen(8798);
     try {
       const hook = (await rest("/webhooks", { body: { url: "http://localhost:8798/", events: ["record.created"] } })).data;
       await mcp("create_record", { object: "companies", data: { name: "Hooked" } });
-      for (let i = 0; i < 50 && !got.length; i++) await new Promise((r) => setTimeout(r, 50));
-      assert.equal(got.length, 1);
-      assert.equal(got[0].event, "record.created");
-      assert.equal(got[0].sig, "sha256=" + createHmac("sha256", hook.secret).update(got[0].body).digest("hex"));
-      assert.equal(JSON.parse(got[0].body).actor.name, "Claude");
+      for (let i = 0; i < 100 && got.length < 2; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(got.length, 2, "one failed delivery and one retry");
+      assert.equal(got[1].event, "record.created");
+      assert.equal(got[1].sig, "sha256=" + createHmac("sha256", hook.secret).update(got[1].body).digest("hex"));
+      assert.equal(JSON.parse(got[1].body).actor.name, "Claude");
+      // The retry carries the same event ID (header and body), so receivers can drop duplicates.
+      assert.ok(got[0].eventId);
+      assert.equal(got[1].eventId, got[0].eventId);
+      assert.equal(JSON.parse(got[1].body).id, got[0].eventId);
+      assert.deepEqual(got.map((g) => g.attempt), ["1", "2"]);
     } finally {
       recv.close();
     }
