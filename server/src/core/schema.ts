@@ -138,6 +138,9 @@ export type ObjectPatch = Partial<Pick<ObjectType, (typeof OBJECT_KEYS)[number]>
 
 export async function updateObjectType(actor: Actor, slug: string, patch: ObjectPatch) {
   requireScope(actor, "schema");
+  for (const k of OBJECT_KEYS) {
+    if (patch[k] !== undefined && typeof patch[k] !== "string") throw new CrmError(`${k} must be a string`);
+  }
   const obj = await getObject(slug);
   if (patch.primary_field) getField(obj, patch.primary_field);
   if (patch.label_plural !== undefined) await checkPluralFree(String(patch.label_plural), obj.id);
@@ -227,9 +230,22 @@ export type FieldPatch = {
   choices?: { value: string; label: string; color?: string; kind?: string; probability?: number | null }[];
 };
 
+/** Type-check a field patch before anything is written. */
+export function checkFieldPatch(patch: FieldPatch) {
+  const types = { label: "string", description: "string", required: "boolean", position: "number" } as const;
+  for (const [k, t] of Object.entries(types)) {
+    const v = patch[k as keyof typeof types];
+    if (v !== undefined && typeof v !== t) throw new CrmError(`${k} must be a ${t}`);
+  }
+  for (const k of ["choices", "add_choices"] as const) {
+    if (patch[k] !== undefined && !Array.isArray(patch[k])) throw new CrmError(`${k} must be a list`);
+  }
+}
+
 /** Non-destructive field edits. Removing choices or changing type goes through destructiveChange. */
 export async function updateField(actor: Actor, slug: string, key: string, patch: FieldPatch) {
   requireScope(actor, "schema");
+  checkFieldPatch(patch);
   const obj = await getObject(slug);
   const f = getField(obj, key);
   try {
@@ -351,6 +367,12 @@ export async function applyDestructiveIn(tx: Db, actor: Actor, c: DestructiveCha
     }
     case "remove_choices": {
       const f = await lockField(tx, getField(obj, c.field).id);
+      if (f.type !== "select" && f.type !== "multi_select") throw new CrmError(`${f.key} is not a select field`);
+      if (!Array.isArray(c.values) || !c.values.length || c.values.some((v) => typeof v !== "string")) {
+        throw new CrmError("values must be a list of option values");
+      }
+      const unknown = c.values.filter((v) => !f.options.choices?.some((x) => x.value === v));
+      if (unknown.length) throw new CrmError(`${f.key} has no option ${unknown.join(", ")}`);
       const choices = (f.options.choices ?? []).filter((x) => !c.values.includes(x.value));
       await tx`update field_defs set options = ${json({ ...f.options, choices })}::jsonb where id = ${f.id}`;
       break;

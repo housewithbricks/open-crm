@@ -119,7 +119,7 @@ function ObjectSettings({ obj }: { obj: ObjectType }) {
         </div>
       </SettingRow>
       <SettingRow label="Description" hint="Shown to you and to agents">
-        <Textarea className="min-h-14" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={`What is a ${obj.label.toLowerCase()}?`} />
+        <Textarea className="min-h-14" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={`What is ${/^[aeiou]/i.test(obj.label) ? "an" : "a"} ${obj.label.toLowerCase()}?`} />
       </SettingRow>
       <SettingRow label="Name field" hint="The field used as each record's title">
         <Select width={260} value={primary} ariaLabel="Name field" onChange={(v) => v && setPrimary(v)} options={textFields.map((f) => ({ value: f.key, label: f.label }))} />

@@ -65,12 +65,20 @@ export async function linksFor(activityIds: string[]) {
   return out;
 }
 
+/** title and body are strings when given. */
+function checkText(input: { title?: unknown; body?: unknown }) {
+  for (const k of ["title", "body"] as const) {
+    if (input[k] !== undefined && typeof input[k] !== "string") throw new CrmError(`${k} must be a string`);
+  }
+}
+
 export async function logActivity(
   actor: Actor,
   input: { record_id?: string | null; record_ids?: string[]; kind: ActivityKind; title?: string; body?: string; due_at?: string | null },
 ) {
   requireScope(actor, "write");
   if (!ACTIVITY_KINDS.includes(input.kind)) throw new CrmError(`kind must be one of ${ACTIVITY_KINDS.join(", ")}`);
+  checkText(input);
   if (input.kind === "task" && !input.title) throw new CrmError("Tasks need a title");
   if (!input.title && !input.body) throw new CrmError("Provide a title or body");
   const due = parseDue(input.due_at);
@@ -118,6 +126,7 @@ export async function updateActivity(
 ) {
   requireScope(actor, "write");
   if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
+  checkText(patch);
   await transaction(async (tx) => {
     const [cur] = await tx<Activity[]>`select * from activities where id = ${id} and deleted_at is null for update`;
     if (!cur) throw notFound(opts.taskOnly ? "Task" : "Activity");

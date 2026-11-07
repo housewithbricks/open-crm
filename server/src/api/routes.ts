@@ -17,8 +17,8 @@ import {
   writeReply,
   type Filter,
 } from "../core/records.js";
-import { addField, createObjectType, getField, getObject, loadSchema, updateField, updateObjectType, type DestructiveChange } from "../core/schema.js";
-import { CrmError, requireScope, userActor, type Actor } from "../core/types.js";
+import { addField, checkFieldPatch, createObjectType, getField, getObject, loadSchema, updateField, updateObjectType, type DestructiveChange } from "../core/schema.js";
+import { CrmError, FIELD_TYPES, requireScope, userActor, type Actor } from "../core/types.js";
 import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
 import { dashboard } from "../core/dashboard.js";
@@ -172,6 +172,11 @@ api.patch("/objects/:slug/fields/:key", async (c) => {
   requireScope(actor, "schema");
   const { type, remove_choices, ...patch } = await jsonBody(c);
   const [slug, key] = [c.req.param("slug"), c.req.param("key")];
+  if (type !== undefined && !FIELD_TYPES.includes(type)) throw new CrmError(`type must be one of ${FIELD_TYPES.join(", ")}`);
+  if (remove_choices !== undefined && (!Array.isArray(remove_choices) || remove_choices.some((v) => typeof v !== "string"))) {
+    throw new CrmError("remove_choices must be a list of option values");
+  }
+  checkFieldPatch(patch);
   const destructive: DestructiveChange[] = [];
   if (type) destructive.push({ kind: "change_field_type", object: slug, field: key, type });
   if (remove_choices?.length) destructive.push({ kind: "remove_choices", object: slug, field: key, values: remove_choices });

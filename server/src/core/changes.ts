@@ -26,12 +26,32 @@ export async function requestOrApply(actor: Actor, change: DestructiveChange, re
     await applyDestructive(actor, change);
     return { applied: true as const };
   }
+  await dryRun(actor, change);
   const [row] = await sql<ChangeRequest[]>`
     insert into change_requests (actor_type, actor_name, kind, summary, reason, payload)
     values (${actor.type}, ${actor.name}, ${change.kind}, ${describeChange(change)}, ${reason}, ${json(change)}::jsonb)
     returning *`;
   await audit(sql, actor, "change.request", change.object, row.id, null, change);
   return { applied: false as const, change_request: row };
+}
+
+const DRY_RUN = Symbol("dry run");
+
+/**
+ * Apply a change in a transaction that always rolls back, so a request that would fail at
+ * approval is refused now. A rollback drops the transaction's queued webhooks.
+ */
+async function dryRun(actor: Actor, change: DestructiveChange) {
+  try {
+    await transaction(async (tx) => {
+      await applyDestructiveIn(tx, actor, change);
+      throw DRY_RUN;
+    });
+  } catch (e) {
+    if (e !== DRY_RUN) throw e;
+  } finally {
+    invalidateSchema();
+  }
 }
 
 export async function listChanges(status?: string) {

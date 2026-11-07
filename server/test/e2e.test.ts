@@ -543,8 +543,13 @@ describe("review fixes", () => {
     assert.equal(junk.type, "text");
     assert.equal((await rest(`/records/${g2.id}`)).data.record.data.junk, "7");
 
-    // Agents' type changes go through approval; a refused approval stays pending.
+    // Agents' type changes go through approval. One that can't apply now is refused at once;
+    // one that stops applying before approval (the data changed) is refused then and stays pending.
+    assert.ok((await mcp("request_schema_change", { kind: "change_field_type", object: "gadgets", field: "junk", type: "boolean", reason: "flags" })).error);
+    await rest(`/records/${g1.id}`, { method: "PATCH", body: { junk: "1" } });
+    await rest(`/records/${g2.id}`, { method: "PATCH", body: { junk: "0" } });
     const req = await mcp("request_schema_change", { kind: "change_field_type", object: "gadgets", field: "junk", type: "boolean", reason: "flags" });
+    await rest(`/records/${g1.id}`, { method: "PATCH", body: { junk: "abc" } });
     const decided = await rest(`/changes/${req.data.change_request.id}/approve`, { body: {} });
     assert.equal(decided.status, 409);
     assert.equal((await rest("/changes?status=pending")).data.some((c: any) => c.id === req.data.change_request.id), true);
@@ -553,7 +558,7 @@ describe("review fixes", () => {
     // "Big Co" and "big-co" would merge into one option and lose the difference, so it's refused until they match.
     const clash = await rest("/objects/gadgets/fields/maker", { method: "PATCH", body: { type: "select" } });
     assert.equal(clash.status, 409);
-    assert.match(clash.data.error, /"Big Co" and "big-co" would become the same option/);
+    assert.match(clash.data.error, /("Big Co" and "big-co"|"big-co" and "Big Co") would become the same option/);
     await rest(`/records/${g2.id}`, { method: "PATCH", body: { maker: "Big Co" } });
     assert.equal((await rest("/objects/gadgets/fields/maker", { method: "PATCH", body: { type: "select" } })).status, 200);
     const maker = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gadgets").fields.find((f: any) => f.key === "maker");
@@ -1132,5 +1137,116 @@ describe("round 5 fixes", () => {
     const afterWin = (await rest("/dashboard")).data.pipeline.won_this_month;
     assert.equal(afterWin.n, before.n);
     assert.equal(afterWin.amount, before.amount);
+  });
+});
+
+describe("round 5 review", () => {
+  const pending = async () => Number((await db`select count(*)::int as n from change_requests`)[0].n);
+  let ready: Promise<void> | null = null;
+  const setup = () =>
+    (ready ??= (async () => {
+      const r = await rest("/objects", {
+        body: {
+          label: "Gizmo",
+          fields: [
+            { key: "tag", label: "Tag", type: "select", choices: ["Alpha", "Beta", "Go"] },
+            { key: "code", label: "Code", type: "text" },
+            { key: "phone", label: "Phone", type: "phone" },
+            { key: "note", label: "Note", type: "text" },
+          ],
+        },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+      await rest("/objects/gizmos/records", { body: { name: "G1", code: "abc", tag: "Alpha" } });
+    })());
+
+  it("1: an agent's bad destructive request is refused at once and queues nothing", async () => {
+    await setup();
+    const n0 = await pending();
+    const bad: [string, { method: string; body?: unknown }][] = [
+      ["/objects/gizmos/fields/nope", { method: "DELETE" }],
+      ["/objects/gizmos/fields/name", { method: "DELETE" }],
+      ["/objects/companies", { method: "DELETE" }],
+      ["/objects/gizmos/fields/tag", { method: "PATCH", body: { type: 5 } }],
+      ["/objects/gizmos/fields/code", { method: "PATCH", body: { type: "number" } }],
+      ["/objects/gizmos/fields/tag", { method: "PATCH", body: { remove_choices: ["zzz"] } }],
+      ["/objects/gizmos/fields/code", { method: "PATCH", body: { remove_choices: ["abc"] } }],
+    ];
+    for (const [path, opts] of bad) {
+      const r = await rest(path, { ...opts, bearer: key });
+      assert.ok(r.status >= 400 && r.status < 500, `${opts.method} ${path} ${JSON.stringify(opts.body)} → ${r.status}`);
+    }
+    for (const args of [
+      { kind: "archive_field", object: "gizmos", field: "nope", reason: "x" },
+      { kind: "archive_field", object: "gizmos", field: "name", reason: "x" },
+      { kind: "archive_object", object: "people", reason: "x" },
+      { kind: "change_field_type", object: "gizmos", field: "code", type: "number", reason: "x" },
+      { kind: "remove_choices", object: "gizmos", field: "tag", values: ["zzz"], reason: "x" },
+    ]) {
+      assert.ok((await mcp("request_schema_change", args)).error, JSON.stringify(args));
+    }
+    assert.equal(await pending(), n0, "no change requests were queued");
+    const dry = await db`select 1 from audit_log where action like 'schema.%' and object_slug = 'gizmos'`;
+    assert.equal(dry.length, 0, "the dry run left no audit entries");
+
+    // A valid request still queues, and the dry run didn't apply it or leave the cache stale.
+    const ok = await rest("/objects/gizmos/fields/tag", { method: "PATCH", body: { remove_choices: ["beta"] }, bearer: key });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.change_requests.length, 1);
+    assert.equal(ok.data.field.options.choices.length, 3);
+    const del = await rest("/objects/gizmos/fields/code", { method: "DELETE", bearer: key });
+    assert.equal(del.data.applied, false);
+    assert.equal(del.data.change_request.status, "pending");
+    const gizmos = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gizmos");
+    assert.ok(gizmos.fields.some((f: any) => f.key === "code"));
+    assert.equal(await pending(), n0 + 2);
+  });
+
+  it("2: malformed field and activity input is a 400", async () => {
+    await setup();
+    for (const remove_choices of ["nonexistent", "negotiation", [1], { a: 1 }]) {
+      for (const bearer of [undefined, key]) {
+        const r = await rest("/objects/gizmos/fields/tag", { method: "PATCH", body: { remove_choices }, bearer });
+        assert.equal(r.status, 400, `${JSON.stringify(remove_choices)} ${bearer ? "key" : "user"} → ${r.status}`);
+      }
+    }
+    const tag = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gizmos").fields.find((f: any) => f.key === "tag");
+    assert.ok(tag.options.choices.some((c: any) => c.value === "go"), "a string didn't remove options by substring");
+    for (const body of [{ type: 5 }, { type: "nope" }, { choices: "x" }, { add_choices: "x" }, { label: 5 }, { description: [] }, { required: "yes" }, { position: "1" }]) {
+      const r = await rest("/objects/gizmos/fields/tag", { method: "PATCH", body });
+      assert.equal(r.status, 400, `${JSON.stringify(body)} → ${r.status}`);
+    }
+    for (const body of [{ label: 5 }, { description: 5 }, { primary_field: 5 }, { label_plural: [] }]) {
+      const r = await rest("/objects/gizmos", { method: "PATCH", body });
+      assert.equal(r.status, 400, `object ${JSON.stringify(body)} → ${r.status}`);
+    }
+    const task = (await rest("/activities", { body: { kind: "task", title: "Call" } })).data;
+    for (const body of [{ title: 5 }, { body: 5 }, { title: null }, { body: ["x"] }]) {
+      const r = await rest(`/activities/${task.id}`, { method: "PATCH", body });
+      assert.equal(r.status, 400, `patch ${JSON.stringify(body)} → ${r.status}`);
+    }
+    for (const body of [{ kind: "note", title: 5 }, { kind: "note", body: 5 }, { kind: "task", title: ["x"] }]) {
+      const r = await rest("/activities", { body });
+      assert.equal(r.status, 400, `log ${JSON.stringify(body)} → ${r.status}`);
+    }
+  });
+
+  it("3: CSV export then import round-trips values that look like formulas", async () => {
+    await setup();
+    const rec = (await rest("/objects/gizmos/records", { body: { name: "Roundtrip", phone: "+14155550123", note: "- see notes", code: "=SUM(A1)" } })).data;
+    const text = await (await fetch(BASE + "/api/objects/gizmos/export.csv", { headers: { cookie } })).text();
+    const lines = text.split("\r\n");
+    const header = lines[0].split(",");
+    const cells = lines.find((l) => l.startsWith(rec.id))!.split(",");
+    const row = Object.fromEntries(header.map((h, i) => [h, cells[i]]));
+    assert.equal(row.phone, "+14155550123");
+    assert.equal(row.code, "'=SUM(A1)", "formulas are still escaped");
+    const { id, created_at, updated_at, ...data } = row;
+    const imp = await rest("/objects/gizmos/import", { body: { rows: [{ ...data, name: "Roundtrip copy" }] } });
+    assert.equal(imp.data.created, 1, JSON.stringify(imp.data));
+    const copy = (await rest(`/records/${imp.data.records[0].id}`)).data.record;
+    assert.equal(copy.data.phone, "+14155550123");
+    assert.equal(copy.data.note, "- see notes");
+    assert.equal(copy.data.code, "=SUM(A1)");
   });
 });

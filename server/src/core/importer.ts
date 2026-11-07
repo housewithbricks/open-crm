@@ -62,6 +62,9 @@ async function ensureOptions(tx: Db, actor: Actor, obj: ObjectType, field: Field
   return field.type === "multi_select" ? values : values[0];
 }
 
+/** Undo the export's formula escaping: '=SUM(A1) → =SUM(A1). */
+const unescapeCell = (v: unknown) => (typeof v === "string" && /^'[=+\-@\t\r]/.test(v) ? v.slice(1) : v);
+
 /**
  * Create or upsert many records. Rows are keyed by field key; values may use names for relations.
  * Each row is one transaction: if it fails, the related records and options it added are rolled back too.
@@ -83,7 +86,8 @@ export async function importRows(actor: Actor, slug: string, rows: Record<string
       const obj = structuredClone(await getObject(slug));
       const r = await transaction(async (tx) => {
         const data: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(rows[i] ?? {})) {
+        for (const [k, raw] of Object.entries(rows[i] ?? {})) {
+          const v = unescapeCell(raw);
           if (v === undefined || v === null || (typeof v === "string" && !v.trim())) continue;
           const f = obj.fields.find((x) => x.key === k);
           if (!f) throw new CrmError(`Unknown field "${k}"`);
@@ -117,10 +121,12 @@ export async function importRows(actor: Actor, slug: string, rows: Record<string
 /**
  * One CSV cell. Text starting with = + - @ tab or CR is prefixed with ' so spreadsheet apps
  * show it instead of running it as a formula. Numbers are left alone (-5 stays -5).
+ * Import strips that prefix again (unescapeCell).
  */
 const csvCell = (v: unknown) => {
   let s = v === null || v === undefined ? "" : String(v);
-  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  // Phone numbers (+1 415 555-0123) can't be formulas, so they're left as they are.
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s) && !/^\+[\d\s().-]+$/.test(s)) s = "'" + s;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
