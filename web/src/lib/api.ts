@@ -25,13 +25,15 @@ export type RecordDetail = {
   record: CrmRecord; refs: Record<string, Ref>;
   related: { object: string; label: string; field: string; field_label: string; records: Ref[] }[];
 };
+/** Where a write came from, e.g. the email an agent read before changing a deal. */
+export type Source = { url: string; label?: string };
 export type TimelineItem =
-  | { type: "activity"; id: string; kind: string; title: string; body: string; due_at: string | null; done_at: string | null; actor_type: string; actor_name: string; created_at: string; links: Ref[] }
-  | { type: "change"; id: string; action: string; actor_type: string; actor_name: string; before: any; after: any; created_at: string; undone_at: string | null };
+  | { type: "activity"; id: string; kind: string; title: string; body: string; due_at: string | null; done_at: string | null; actor_type: string; actor_name: string; created_at: string; links: Ref[]; source?: Source | null }
+  | { type: "change"; id: string; action: string; actor_type: string; actor_name: string; before: any; after: any; source?: Source | null; created_at: string; undone_at: string | null };
 export type Task = { id: string; kind: string; title: string; body: string; due_at: string | null; done_at: string | null; actor_type: string; actor_name: string; record_id: string | null; links: Ref[]; created_at: string };
 export type ChangeRequest = { id: string; actor_type: string; actor_name: string; kind: string; summary: string; reason: string; status: string; created_at: string; decided_at: string | null };
 export type ApiKey = { id: string; name: string; prefix: string; scopes: string[]; last_used_at: string | null; created_at: string };
-export type AuditEntry = { id: string; actor_type: string; actor_name: string; action: string; object_slug: string | null; target_id: string | null; before: any; after: any; created_at: string; undone_at: string | null; undoable?: boolean };
+export type AuditEntry = { id: string; actor_type: string; actor_name: string; action: string; object_slug: string | null; target_id: string | null; before: any; after: any; source?: Source | null; created_at: string; undone_at: string | null; undoable?: boolean };
 export type FilterOp = "eq" | "neq" | "contains" | "gt" | "gte" | "lt" | "lte" | "between" | "in" | "not_in" | "is_empty" | "not_empty";
 export type Filter = { field: string; op: FilterOp; value?: any };
 export type ViewConfig = { kind?: "table" | "board"; q?: string; filters?: Filter[]; sort?: string; dir?: "asc" | "desc"; group_by?: string };

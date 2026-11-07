@@ -18,7 +18,7 @@ import { importRows } from "../core/importer.js";
 import { dashboard } from "../core/dashboard.js";
 import { createView, deleteView, listViews, updateView } from "../core/views.js";
 import { addField, createObjectType, getObject, loadSchema, updateField, updateObjectType } from "../core/schema.js";
-import { CrmError, FIELD_TYPES, type Actor, type ObjectType } from "../core/types.js";
+import { CrmError, FIELD_TYPES, withSource, type Actor, type ObjectType } from "../core/types.js";
 
 const VERSION = "0.1.0";
 
@@ -28,7 +28,8 @@ const INSTRUCTIONS = `Open CRM is the user's personal CRM. You are a first-class
 - Use log_activity to record calls, meetings and notes, and create_task for follow-ups.
 - You may grow the CRM: add fields or new objects when the user's data needs them. Write clear labels and descriptions.
 - Destructive schema changes (archive or retype a field, archive an object, remove options) go to the user for approval through request_schema_change.
-- Every write is attributed to you and visible in the record timeline and audit log.`;
+- Every write is attributed to you and visible in the record timeline and audit log.
+- When a write is based on something the user can open (an email, a calendar event, a document, a call recording), pass it as source {url, label}. The change history links to it.`;
 
 /** Compact schema description that agents can read. */
 export function schemaForAgent(objects: ObjectType[]) {
@@ -69,6 +70,13 @@ function wrap<A>(fn: (args: A) => Promise<unknown>) {
 const dataSchema = z.record(z.string(), z.unknown()).describe("Field values keyed by field key (see describe_schema)");
 const idSchema = z.string().describe("Record id (uuid)");
 const choiceList = z.array(z.string()).describe("Option labels for select / multi_select");
+const sourceSchema = z
+  .object({
+    url: z.string().describe("http(s) link to the email, message, document, meeting or page this write is based on"),
+    label: z.string().optional().describe('Short description shown as the link text, e.g. "Email from Dana: we\'re ready to sign"'),
+  })
+  .optional()
+  .describe("What this write is based on. Shown as a link on the change in the record timeline and audit log.");
 const colorSchema = z.string().describe("A hex color like #0ea5e9, or one of gray, blue, violet, green, amber, orange, red, teal, pink");
 
 async function listViewsById(id: string) {
@@ -196,27 +204,27 @@ export function buildMcpServer(actor: Actor) {
   if (can("write")) {
     server.registerTool(
       "create_record",
-      { title: "Create record", description: "Create a record. Prefer upsert_record when a unique field (email, domain) is known.", inputSchema: { object: z.string(), data: dataSchema } },
-      wrap(async ({ object, data }) => {
-        const rec = await createRecord(actor, object, data);
+      { title: "Create record", description: "Create a record. Prefer upsert_record when a unique field (email, domain) is known.", inputSchema: { object: z.string(), data: dataSchema, source: sourceSchema } },
+      wrap(async ({ object, data, source }) => {
+        const rec = await createRecord(withSource(actor, source), object, data);
         return writeReply(actor, "created", rec.id, rec);
       }),
     );
 
     server.registerTool(
       "update_record",
-      { title: "Update record", description: "Update some fields of a record. Set a field to null to clear it.", inputSchema: { id: idSchema, data: dataSchema }, annotations: { idempotentHint: true } },
-      wrap(async ({ id, data }) => {
-        const rec = await updateRecord(actor, id, data);
+      { title: "Update record", description: "Update some fields of a record. Set a field to null to clear it.", inputSchema: { id: idSchema, data: dataSchema, source: sourceSchema }, annotations: { idempotentHint: true } },
+      wrap(async ({ id, data, source }) => {
+        const rec = await updateRecord(withSource(actor, source), id, data);
         return writeReply(actor, "updated", rec.id, rec);
       }),
     );
 
     server.registerTool(
       "upsert_record",
-      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}, or {id, action} for a key without the read scope.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema }, annotations: { idempotentHint: true } },
-      wrap(async ({ object, match_on, data }) => {
-        const r = await upsertRecord(actor, object, match_on, data);
+      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}, or {id, action} for a key without the read scope.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema, source: sourceSchema }, annotations: { idempotentHint: true } },
+      wrap(async ({ object, match_on, data, source }) => {
+        const r = await upsertRecord(withSource(actor, source), object, match_on, data);
         return writeReply(actor, r.action, r.record.id, r);
       }),
     );
@@ -231,11 +239,12 @@ export function buildMcpServer(actor: Actor) {
           match_on: z.string().optional().describe("Field to dedupe on, e.g. email or domain"),
           records: z.array(dataSchema).max(500),
           add_missing_options: z.boolean().optional().describe("Add unknown select values as options (needs schema scope)"),
+          source: sourceSchema.describe("What these writes are based on, e.g. a spreadsheet. Applies to every row."),
         },
         annotations: { idempotentHint: true },
       },
-      wrap(async ({ object, match_on, records, add_missing_options }) => {
-        const r = await importRows(actor, object, records, { match_on, add_missing_options });
+      wrap(async ({ object, match_on, records, add_missing_options, source }) => {
+        const r = await importRows(withSource(actor, source), object, records, { match_on, add_missing_options });
         return { created: r.created, updated: r.updated, failed: r.failed, errors: r.errors, ids: r.records.map((x) => x.id) };
       }),
     );
@@ -291,23 +300,24 @@ export function buildMcpServer(actor: Actor) {
 
     server.registerTool(
       "archive_record",
-      { title: "Archive record", description: "Soft-delete a record. The user can restore it from the UI.", inputSchema: { id: idSchema }, annotations: { destructiveHint: true } },
-      wrap(async ({ id }) => archiveRecord(actor, id)),
+      { title: "Archive record", description: "Soft-delete a record. The user can restore it from the UI.", inputSchema: { id: idSchema, source: sourceSchema }, annotations: { destructiveHint: true } },
+      wrap(async ({ id, source }) => archiveRecord(withSource(actor, source), id)),
     );
 
     server.registerTool(
       "log_activity",
       {
         title: "Log activity",
-        description: "Add a note, call, email or meeting summary. It shows on the timeline of every linked record, e.g. a meeting linked to a person, their company and a deal.",
+        description: "Add a note, call, email or meeting summary. It shows on the timeline of every linked record, e.g. a meeting linked to a person, their company and a deal. Pass source to link the original (e.g. the email in the user's mail app).",
         inputSchema: {
           record_ids: z.array(idSchema).min(1).describe("Records this is about, from any objects"),
           kind: z.enum(ACTIVITY_KINDS.filter((k) => k !== "task") as ["note", "call", "email", "meeting"]),
           title: z.string().optional(),
           body: z.string(),
+          source: sourceSchema,
         },
       },
-      wrap(async (a) => logActivity(actor, a)),
+      wrap(async ({ source, ...a }) => logActivity(withSource(actor, source), a)),
     );
 
     server.registerTool(
@@ -315,15 +325,15 @@ export function buildMcpServer(actor: Actor) {
       {
         title: "Create task",
         description: "Create a follow-up task. Link it to any number of records from any objects (people, companies, deals, custom objects). Due date as YYYY-MM-DD or ISO.",
-        inputSchema: { title: z.string(), record_ids: z.array(idSchema).optional().describe("Records this task is about"), due_at: z.string().optional(), body: z.string().optional() },
+        inputSchema: { title: z.string(), record_ids: z.array(idSchema).optional().describe("Records this task is about"), due_at: z.string().optional(), body: z.string().optional(), source: sourceSchema },
       },
-      wrap(async (a) => logActivity(actor, { ...a, kind: "task" })),
+      wrap(async ({ source, ...a }) => logActivity(withSource(actor, source), { ...a, kind: "task" })),
     );
 
     server.registerTool(
       "complete_task",
-      { title: "Complete task", description: "Mark a task done, or reopen it with done=false.", inputSchema: { task_id: z.string(), done: z.boolean().optional() }, annotations: { idempotentHint: true } },
-      wrap(async ({ task_id, done }) => updateActivity(actor, task_id, { done: done ?? true }, { taskOnly: true })),
+      { title: "Complete task", description: "Mark a task done, or reopen it with done=false.", inputSchema: { task_id: z.string(), done: z.boolean().optional(), source: sourceSchema }, annotations: { idempotentHint: true } },
+      wrap(async ({ task_id, done, source }) => updateActivity(withSource(actor, source), task_id, { done: done ?? true }, { taskOnly: true })),
     );
 
     server.registerTool(
@@ -337,10 +347,11 @@ export function buildMcpServer(actor: Actor) {
           body: z.string().optional(),
           due_at: z.string().nullable().optional(),
           record_ids: z.array(idSchema).optional().describe("The complete new list of linked records"),
+          source: sourceSchema,
         },
         annotations: { idempotentHint: true },
       },
-      wrap(async ({ task_id, ...patch }) => updateActivity(actor, task_id, patch, { taskOnly: true })),
+      wrap(async ({ task_id, source, ...patch }) => updateActivity(withSource(actor, source), task_id, patch, { taskOnly: true })),
     );
   }
 

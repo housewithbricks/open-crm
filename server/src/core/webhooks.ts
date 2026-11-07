@@ -42,6 +42,8 @@ export type EventPayload = {
   target_id: string | null;
   before: unknown;
   after: unknown;
+  /** Where the write came from, when the caller gave one. */
+  source: { url: string; label?: string } | null;
   at: string;
 };
 
@@ -218,6 +220,7 @@ export async function testWebhook(id: string) {
     target_id: null,
     before: null,
     after: { message: "Hello from Open CRM" },
+    source: null,
     at: new Date().toISOString(),
   }, 3);
 }

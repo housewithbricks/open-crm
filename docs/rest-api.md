@@ -34,6 +34,17 @@ These routes refuse API keys (`403`) and need a signed-in session:
 - appearance settings: `PATCH /api/settings`
 - sign out everywhere: `POST /api/logout-all`
 
+## Source links
+
+Any write can say what it is based on, such as the email an agent read before moving a deal. Send headers rather than a body field, so a record field named `source` stays a field value:
+
+```
+X-Source-Url: https://mail.example.com/inbox/abc123
+X-Source-Label: Email%20from%20Dana   (optional; percent-encode anything that isn't ASCII)
+```
+
+The link is stored on the audit entry (and on a note or task you create). It is returned as `source` in the timeline and the audit log, and sent in webhook payloads. Only `http(s)` URLs are accepted; anything else is a `400`.
+
 ## Errors
 
 Errors are JSON: `{"error": "message", "details": …}` with a `4xx` status. The message says what to fix (for example the valid fields or options). `409` means a conflict, such as a duplicate unique value or an undo of something that changed again since.

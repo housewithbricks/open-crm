@@ -1,4 +1,4 @@
-import { sql, type Db } from "../db.js";
+import { json, sql, type Db } from "../db.js";
 import { audit, transaction } from "./audit.js";
 import { toDay, UUID_RE } from "./fields.js";
 import { writeReply } from "./records.js";
@@ -19,6 +19,7 @@ export type Activity = {
   actor_name: string;
   created_at: string;
   deleted_at?: string | null;
+  source?: { url: string; label?: string } | null;
 };
 
 /** Date-only input ("2026-11-09") is stored at noon UTC so it shows the same day in every timezone. */
@@ -85,9 +86,9 @@ export async function logActivity(
   const row = await transaction(async (tx) => {
     const ids = await resolveLinks(tx, [input.record_id, ...(input.record_ids ?? [])]);
     const [row] = await tx<Activity[]>`
-      insert into activities (record_id, kind, title, body, due_at, actor_type, actor_name)
+      insert into activities (record_id, kind, title, body, due_at, actor_type, actor_name, source)
       values (${ids[0] ?? null}, ${input.kind}, ${input.title ?? ""}, ${input.body ?? ""},
-              ${due}::timestamptz, ${actor.type}, ${actor.name})
+              ${due}::timestamptz, ${actor.type}, ${actor.name}, ${json(actor.source)}::jsonb)
       returning *`;
     await setLinks(tx, row.id, ids);
     await audit(tx, actor, "activity.create", null, row.id, null, {
@@ -218,7 +219,7 @@ export async function timeline(recordId: string, limit = 100) {
     order by a.created_at desc limit ${limit}`;
   const links = await linksFor(rows.map((r) => r.id));
   const acts: any[] = rows.map((r) => ({ ...r, links: links[r.id] ?? [] }));
-  const changes = await sql`select 'change' as type, id::text, action, actor_type, actor_name, before, after, created_at, undone_at
+  const changes = await sql`select 'change' as type, id::text, action, actor_type, actor_name, before, after, source, created_at, undone_at
                             from audit_log where target_id = ${recordId} and action like 'record.%' order by id desc limit ${limit}`;
   return [...acts, ...changes]
     .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))

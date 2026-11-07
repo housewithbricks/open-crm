@@ -1329,3 +1329,65 @@ describe("round 10 review", () => {
     assert.deepEqual((await rest(`/objects/lead_lists/records?filters=${encodeURIComponent(unset)}`)).data.records.map((r: any) => r.data.name), ["Unset one"]);
   });
 });
+
+describe("source links", () => {
+  it("records where a write came from and shows it in the timeline, audit log and webhooks", async () => {
+    const { createServer } = await import("node:http");
+    const got: any[] = [];
+    const recv = createServer((req, res) => {
+      let b = "";
+      req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        got.push(JSON.parse(b));
+        res.end("ok");
+      });
+    }).listen(8796);
+    try {
+      const hook = (await rest("/webhooks", { body: { url: "http://localhost:8796/", events: ["record.updated"] } })).data;
+      const deal = (await mcp("create_record", { object: "deals", data: { name: "Sourced deal", stage: "Lead" } })).data;
+      const email = { url: "https://mail.example.com/inbox/abc123", label: "Email from Dana: ready to sign" };
+
+      // MCP: a stage change and an activity, both linked to the email.
+      const upd = await mcp("update_record", { id: deal.id, data: { stage: "Negotiation" }, source: email });
+      assert.equal(upd.error, undefined);
+      await mcp("log_activity", { record_ids: [deal.id], kind: "email", body: "Dana says they're ready to sign", source: email });
+
+      const tl = (await rest(`/records/${deal.id}/timeline`)).data as any[];
+      const change = tl.find((t) => t.type === "change" && t.action === "record.update");
+      assert.deepEqual(change.source, { url: email.url, label: email.label });
+      const act = tl.find((t) => t.type === "activity" && t.kind === "email");
+      assert.deepEqual(act.source, { url: email.url, label: email.label });
+      // The create had no source.
+      assert.equal(tl.find((t) => t.action === "record.create").source, null);
+
+      assert.deepEqual((await auditFor(deal.id, "record.update")).source, { url: email.url, label: email.label });
+
+      for (let i = 0; i < 50 && !got.length; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(got[0]?.source, { url: email.url, label: email.label });
+      await rest(`/webhooks/${hook.id}`, { method: "DELETE" });
+
+      // Only http(s) links, so the UI never renders a javascript: href.
+      const bad = await mcp("update_record", { id: deal.id, data: { stage: "Proposal" }, source: { url: "javascript:alert(1)" } });
+      assert.match(bad.error!, /http/);
+      assert.equal((await rest(`/records/${deal.id}`)).data.record.data.stage, "negotiation");
+
+      // REST: headers, so a "source" field in the body stays a field value. Labels may be percent-encoded.
+      const res = await fetch(`${BASE}/api/records/${deal.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-source-url": "https://docs.example.com/notes", "x-source-label": encodeURIComponent("Call notes — Q4") },
+        body: JSON.stringify({ name: "Sourced deal (renamed)" }),
+      });
+      assert.equal(res.status, 200);
+      const viaRest = ((await rest(`/records/${deal.id}/timeline`)).data as any[]).find((t) => t.type === "change" && t.after?.name);
+      assert.deepEqual(viaRest.source, { url: "https://docs.example.com/notes", label: "Call notes — Q4" });
+      const badRest = await fetch(`${BASE}/api/records/${deal.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-source-url": "data:text/html,hi" },
+        body: JSON.stringify({ name: "nope" }),
+      });
+      assert.equal(badRest.status, 400);
+    } finally {
+      recv.close();
+    }
+  });
+});

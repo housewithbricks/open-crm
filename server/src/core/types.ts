@@ -62,10 +62,18 @@ export type ObjectType = {
 
 export type Scope = "read" | "write" | "schema";
 
+/**
+ * Where a write came from, e.g. the email an agent read before moving a deal. It is saved on
+ * the audit entry (and on activities) so the change history can link back to it.
+ */
+export type Source = { url: string; label?: string };
+
 export type Actor = {
   type: "user" | "agent";
   name: string;
   scopes: Scope[];
+  /** Set per call, for the writes of that call only. */
+  source?: Source;
 };
 
 export const userActor: Actor = { type: "user", name: "You", scopes: ["read", "write", "schema"] };
@@ -90,3 +98,32 @@ export function requireScope(actor: Actor, scope: Scope) {
     throw new CrmError(`This API key lacks the "${scope}" scope`, 403);
   }
 }
+
+/**
+ * Validate a source link. Only http(s) URLs: the UI renders it as a link, so other schemes
+ * (javascript:, data:) are refused. Returns undefined when no source is given.
+ */
+export function checkSource(input: unknown): Source | undefined {
+  if (input === undefined || input === null || input === "") return undefined;
+  const raw = typeof input === "string" ? { url: input } : input;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new CrmError("source must be {url, label?}");
+  const { url, label } = raw as Record<string, unknown>;
+  if (typeof url !== "string" || !url.trim()) throw new CrmError("source.url is required");
+  if (url.length > 2048) throw new CrmError("source.url is longer than 2048 characters");
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    throw new CrmError(`source.url is not a valid URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new CrmError("source.url must start with http:// or https://");
+  if (label !== undefined && label !== null && typeof label !== "string") throw new CrmError("source.label must be a string");
+  const text = typeof label === "string" ? label.trim().slice(0, 200) : "";
+  return text ? { url: parsed.href, label: text } : { url: parsed.href };
+}
+
+/** The actor for one call, carrying that call's source (if any). */
+export const withSource = (actor: Actor, source: unknown): Actor => {
+  const s = checkSource(source);
+  return s ? { ...actor, source: s } : actor;
+};

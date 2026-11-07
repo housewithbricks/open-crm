@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Avatar, Button, Empty, List, PageHead, Pill, refClass, Segmented, Who } from "../components/ui";
+import { Avatar, Button, Empty, List, PageHead, Pill, refClass, Segmented, SourceLink, Who } from "../components/ui";
 import { api, type AuditEntry } from "../lib/api";
 import { describeAudit } from "../lib/describe";
 import { cn, timeAgo } from "../lib/format";
@@ -34,6 +34,7 @@ export default function Audit() {
                   {openable && <> · <button type="button" className={refClass} onClick={() => navigate({ to: "/o/$slug", params: { slug: a.object_slug! }, search: { r: a.target_id! } })}>Open</button></>}
                 </div>
                 {d.diff?.map((line, i) => <div key={i} className="text-xs text-muted">{line}</div>)}
+                {a.source && <div className="mt-0.5"><SourceLink source={a.source} /></div>}
               </div>
               <span className="pt-px text-xs whitespace-nowrap text-muted">{timeAgo(a.created_at)}</span>
               {a.undone_at ? <Pill>Undone</Pill> : a.undoable ? (

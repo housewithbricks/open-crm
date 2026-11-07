@@ -18,7 +18,7 @@ import {
   type Filter,
 } from "../core/records.js";
 import { addField, createObjectType, getObject, loadSchema, updateObjectType, type DestructiveChange } from "../core/schema.js";
-import { CrmError, FIELD_TYPES, requireScope, userActor, type Actor } from "../core/types.js";
+import { CrmError, FIELD_TYPES, requireScope, userActor, withSource, type Actor } from "../core/types.js";
 import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
 import { dashboard } from "../core/dashboard.js";
@@ -122,16 +122,34 @@ async function jsonBody(c: { req: { json: () => Promise<any> } }) {
 
 const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
+/**
+ * A write's source link comes in headers, not the body: the body of a record write is field
+ * values, and "source" is a common field name. X-Source-Label may be percent-encoded, since
+ * header values are ASCII.
+ */
+function sourceFromHeaders(c: { req: { header: (h: string) => string | undefined } }) {
+  const url = c.req.header("x-source-url");
+  if (!url) return undefined;
+  let label = c.req.header("x-source-label");
+  if (label) {
+    try {
+      label = decodeURIComponent(label);
+    } catch {}
+  }
+  return { url, label };
+}
+
 // Everything below needs a session cookie or an API key (Bearer).
 api.use("*", async (c, next) => {
+  const source = WRITE_METHODS.has(c.req.method) ? sourceFromHeaders(c) : undefined;
   if (await verifySession(getCookie(c, COOKIE))) {
-    c.set("actor", userActor);
+    c.set("actor", withSource(userActor, source));
     return next();
   }
   const bearer = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   const agent = await actorFromApiKey(bearer);
   if (!agent) throw new CrmError("Not signed in", 401);
-  c.set("actor", agent);
+  c.set("actor", withSource(agent, source));
   // Reading CRM data (records, search, export, audit, dashboard…) needs the read scope.
   // Anything that isn't a write counts as a read: Hono runs GET handlers for HEAD too.
   if (!WRITE_METHODS.has(c.req.method) && !/\/me$/.test(c.req.path)) requireScope(agent, "read");

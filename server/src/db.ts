@@ -240,6 +240,15 @@ const migrations: { id: number; name: string; sql: string }[] = [
         where f.object_type_id = r.object_type_id and f.type = 'date' and r.data->>f.key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T');
     `,
   },
+  {
+    id: 8,
+    name: "change_sources",
+    sql: /* sql */ `
+      -- Where a write came from ({url, label}), e.g. the email an agent acted on.
+      alter table audit_log add column source jsonb;
+      alter table activities add column source jsonb;
+    `,
+  },
 ];
 
 export async function migrate() {

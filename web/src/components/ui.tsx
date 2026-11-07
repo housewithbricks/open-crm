@@ -1,6 +1,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { cn, dot, fmtDay, initials, objColor, tint } from "../lib/format";
 import { useObject } from "../lib/schema";
+import type { Source } from "../lib/api";
 
 /* --------------------------------- controls --------------------------------- */
 
@@ -179,6 +180,31 @@ export function Avatar({ type, name }: { type: string; name: string }) {
 }
 
 /** Name of whoever made a change; agents are teal. */
+/**
+ * Where a write came from (e.g. the email an agent acted on), as an outside link. Shows the
+ * label, or the link's host when there is none. Only http(s) links render; the server refuses
+ * other schemes too.
+ */
+export function SourceLink({ source, className }: { source?: Source | null; className?: string }) {
+  if (!source?.url || !/^https?:\/\//i.test(source.url)) return null;
+  let text = source.label;
+  if (!text) {
+    try {
+      text = new URL(source.url).hostname.replace(/^www\./, "");
+    } catch {
+      text = source.url;
+    }
+  }
+  return (
+    <a href={source.url} target="_blank" rel="noopener noreferrer" title={source.url}
+      className={cn("inline-flex max-w-full items-baseline gap-1 text-xs text-muted hover:text-ink", className)}>
+      <span className="shrink-0 text-faint">Source:</span>
+      <span className={cn(refClass, "truncate")}>{text}</span>
+      <span aria-hidden className="shrink-0">↗</span>
+    </a>
+  );
+}
+
 export function Who({ type, name }: { type?: string; name: string }) {
   const agent = type ? type === "agent" : !(name === "You" || name === "system" || name.startsWith("You "));
   return <span className={agent ? "text-agent" : undefined}>{name === "system" ? "Open CRM" : name}</span>;

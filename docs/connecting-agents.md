@@ -13,6 +13,17 @@ First create a key in **Settings → API keys & MCP**. Give each agent its own k
 - `write` lets it create and update records, notes, tasks and saved views. Without `read`, these writes return only the id and what happened (`{"id", "action"}`), never the stored record, activity or view.
 - `schema` lets it add objects and fields. Destructive changes (archiving a field or object, changing a field's type, removing options) still wait for your approval.
 
+### Source links
+
+Every record, note and task write tool (`create_record`, `update_record`, `upsert_record`, `bulk_upsert_records`, `archive_record`, `log_activity`, `create_task`, `update_task`, `complete_task`) takes an optional `source`. Use it to say what the write is based on:
+
+```json
+{ "id": "…", "data": { "stage": "Negotiation" },
+  "source": { "url": "https://mail.google.com/mail/u/0/#inbox/18f2…", "label": "Email from Dana: ready to sign" } }
+```
+
+The change shows a **Source** link in the record timeline and the audit log, so you can open the email (or doc, meeting, ticket) right from the change. It is also in webhook payloads as `source`. Only `http://` and `https://` links are accepted. Labels are cut to 200 characters.
+
 Below, replace `https://YOUR-HOST` with your Open CRM address and `ocrm_…` with your key.
 
 ---

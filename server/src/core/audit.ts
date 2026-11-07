@@ -29,9 +29,9 @@ export async function audit(
   before: unknown,
   after: unknown,
 ) {
-  const [row] = await db`insert into audit_log (actor_type, actor_name, action, object_slug, target_id, before, after)
+  const [row] = await db`insert into audit_log (actor_type, actor_name, action, object_slug, target_id, before, after, source)
            values (${actor.type}, ${actor.name}, ${action}, ${objectSlug}, ${targetId},
-                   ${json(before)}::jsonb, ${json(after)}::jsonb)
+                   ${json(before)}::jsonb, ${json(after)}::jsonb, ${json(actor.source)}::jsonb)
            returning id, created_at`;
   const event = eventForAction(action);
   if (event) {
@@ -44,6 +44,7 @@ export async function audit(
       target_id: targetId,
       before: before ?? null,
       after: after ?? null,
+      source: actor.source ?? null,
       at: new Date(row.created_at).toISOString(),
     };
     const queue = pending.get(db);

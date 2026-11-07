@@ -81,7 +81,7 @@ Tests boot the real server against a fresh `opencrm_test` database, created from
 
 ## Webhooks
 
-**Settings → Webhooks.** Each delivery is a `POST` with JSON `{ event, action, actor, object, target_id, before, after, at }` and these headers:
+**Settings → Webhooks.** Each delivery is a `POST` with JSON `{ event, action, actor, object, target_id, before, after, source, at }` (`source` is the `{url, label}` link a write was based on, or `null`) and these headers:
 - `x-opencrm-event`
 - `x-opencrm-signature: sha256=<HMAC-SHA256 of the raw body with the endpoint secret>`
 
