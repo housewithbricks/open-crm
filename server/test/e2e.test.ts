@@ -1250,3 +1250,22 @@ describe("round 5 review", () => {
     assert.equal(copy.data.code, "=SUM(A1)");
   });
 });
+
+describe("round 6 review", () => {
+  it("a field edit is all or nothing", async () => {
+    const made = await rest("/objects", { body: { label: "Quark", fields: [{ label: "Kind", type: "select", choices: ["Lead", "Other"] }] } });
+    assert.equal(made.status, 200, JSON.stringify(made.data));
+    // Removing "lead" while adding two options that collide must not remove "lead".
+    const r = await rest("/objects/quarks/fields/kind", { method: "PATCH", body: { remove_choices: ["lead"], add_choices: ["A/B", "A B"] } });
+    assert.equal(r.status, 400);
+    const kind = (await rest("/schema")).data.objects.find((o: any) => o.slug === "quarks").fields.find((f: any) => f.key === "kind");
+    assert.deepEqual(kind.options.choices.map((c: any) => c.value), ["lead", "other"]);
+  });
+
+  it("an empty list doesn't satisfy a required multi-select", async () => {
+    await rest("/objects", { body: { label: "Bundle", fields: [{ label: "Tags", type: "multi_select", required: true, choices: ["One", "Two"] }] } });
+    const r = await rest("/objects/bundles/records", { body: { name: "Empty", tags: [] } });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /tags is required/);
+  });
+});

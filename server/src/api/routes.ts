@@ -3,7 +3,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { deleteActivity, listTasks, logActivity, timeline, updateActivity } from "../core/activities.js";
 import { listAudit } from "../core/audit.js";
 import { actorFromApiKey, createApiKey, listApiKeys, login, revokeApiKey, signOutEverywhere, verifySession } from "../core/auth.js";
-import { decideChange, listChanges, requestOrApply } from "../core/changes.js";
+import { decideChange, editField, listChanges, requestOrApply } from "../core/changes.js";
 import {
   archiveRecord,
   counts,
@@ -17,7 +17,7 @@ import {
   writeReply,
   type Filter,
 } from "../core/records.js";
-import { addField, checkFieldPatch, createObjectType, getField, getObject, loadSchema, updateField, updateObjectType, type DestructiveChange } from "../core/schema.js";
+import { addField, createObjectType, getObject, loadSchema, updateObjectType, type DestructiveChange } from "../core/schema.js";
 import { CrmError, FIELD_TYPES, requireScope, userActor, type Actor } from "../core/types.js";
 import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
@@ -176,17 +176,11 @@ api.patch("/objects/:slug/fields/:key", async (c) => {
   if (remove_choices !== undefined && (!Array.isArray(remove_choices) || remove_choices.some((v) => typeof v !== "string"))) {
     throw new CrmError("remove_choices must be a list of option values");
   }
-  checkFieldPatch(patch);
   const destructive: DestructiveChange[] = [];
   if (type) destructive.push({ kind: "change_field_type", object: slug, field: key, type });
   if (remove_choices?.length) destructive.push({ kind: "remove_choices", object: slug, field: key, values: remove_choices });
-  const queued = [];
-  for (const change of destructive) {
-    const r = await requestOrApply(actor, change);
-    if (!r.applied) queued.push(r.change_request);
-  }
-  const field = Object.keys(patch).length ? await updateField(actor, slug, key, patch) : getField(await getObject(slug), key);
-  return c.json(queued.length ? { field, change_requests: queued } : field);
+  const { field, change_requests } = await editField(actor, slug, key, destructive, patch);
+  return c.json(change_requests.length ? { field, change_requests } : field);
 });
 api.delete("/objects/:slug/fields/:key", async (c) =>
   c.json(await requestOrApply(c.get("actor"), { kind: "archive_field", object: c.req.param("slug"), field: c.req.param("key") })),

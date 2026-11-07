@@ -1,6 +1,9 @@
 import { json, sql } from "../db.js";
 import { audit, transaction } from "./audit.js";
-import { applyDestructive, applyDestructiveIn, describeChange, invalidateSchema, type DestructiveChange } from "./schema.js";
+import {
+  applyDestructive, applyDestructiveIn, applyFieldUpdate, checkFieldPatch, describeChange, getField, getObject, invalidateSchema,
+  type DestructiveChange, type FieldPatch,
+} from "./schema.js";
 import { CrmError, notFound, requireScope, userActor, type Actor } from "./types.js";
 
 export type ChangeRequest = {
@@ -35,16 +38,46 @@ export async function requestOrApply(actor: Actor, change: DestructiveChange, re
   return { applied: false as const, change_request: row };
 }
 
+/**
+ * A field edit from the UI or API: a type change and option removals (destructive) plus
+ * ordinary edits. For the user it all commits in one transaction, so a failing part leaves
+ * the field as it was. For an agent, the ordinary edits are checked first, the destructive
+ * parts become change requests, then the ordinary edits apply.
+ */
+export async function editField(actor: Actor, slug: string, key: string, destructive: DestructiveChange[], patch: FieldPatch) {
+  requireScope(actor, "schema");
+  checkFieldPatch(patch);
+  const obj = await getObject(slug);
+  const f = getField(obj, key);
+  const hasPatch = Object.keys(patch).length > 0;
+  const queued = [];
+  try {
+    if (actor.type === "user") {
+      await transaction(async (tx) => {
+        for (const change of destructive) await applyDestructiveIn(tx, actor, change);
+        if (hasPatch) await applyFieldUpdate(tx, actor, obj, f, patch);
+      });
+    } else {
+      if (hasPatch) await rollback((tx) => applyFieldUpdate(tx, actor, obj, f, patch));
+      for (const change of destructive) {
+        const r = await requestOrApply(actor, change);
+        if (!r.applied) queued.push(r.change_request);
+      }
+      if (hasPatch) await transaction((tx) => applyFieldUpdate(tx, actor, obj, f, patch));
+    }
+  } finally {
+    invalidateSchema();
+  }
+  return { field: getField(await getObject(obj.slug), key), change_requests: queued };
+}
+
 const DRY_RUN = Symbol("dry run");
 
-/**
- * Apply a change in a transaction that always rolls back, so a request that would fail at
- * approval is refused now. A rollback drops the transaction's queued webhooks.
- */
-async function dryRun(actor: Actor, change: DestructiveChange) {
+/** Run work in a transaction that always rolls back: it surfaces errors without keeping changes or sending webhooks. */
+async function rollback(work: (tx: Parameters<Parameters<typeof transaction>[0]>[0]) => Promise<unknown>) {
   try {
     await transaction(async (tx) => {
-      await applyDestructiveIn(tx, actor, change);
+      await work(tx);
       throw DRY_RUN;
     });
   } catch (e) {
@@ -52,6 +85,14 @@ async function dryRun(actor: Actor, change: DestructiveChange) {
   } finally {
     invalidateSchema();
   }
+}
+
+/**
+ * Apply a change in a transaction that always rolls back, so a request that would fail at
+ * approval is refused now. A rollback drops the transaction's queued webhooks.
+ */
+async function dryRun(actor: Actor, change: DestructiveChange) {
+  await rollback((tx) => applyDestructiveIn(tx, actor, change));
 }
 
 export async function listChanges(status?: string) {

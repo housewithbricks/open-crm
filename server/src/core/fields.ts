@@ -3,7 +3,8 @@ import { CrmError, type FieldDef, type ObjectType } from "./types.js";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const isBlank = (v: unknown) => v === null || v === undefined || (typeof v === "string" && v.trim() === "");
+const isBlank = (v: unknown) =>
+  v === null || v === undefined || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
 
 function matchChoice(field: FieldDef, raw: unknown): string {
   const choices = field.options.choices ?? [];
