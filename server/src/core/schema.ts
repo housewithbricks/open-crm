@@ -283,7 +283,7 @@ export async function applyFieldUpdate(tx: Db, actor: Actor, obj: ObjectType, fi
       if (hit && hit.label.toLowerCase() !== c.label.toLowerCase() && c.label.toLowerCase() !== hit.value) checkDistinct([hit, c]);
       if (!hit) choices.push({ ...c, color: c.color });
     }
-    options.choices = choices;
+    options.choices = checkDistinct(choices);
   }
   const next = {
     label: patch.label ?? f.label,

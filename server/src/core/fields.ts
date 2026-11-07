@@ -9,7 +9,8 @@ const isBlank = (v: unknown) =>
 function matchChoice(field: FieldDef, raw: unknown): string {
   const choices = field.options.choices ?? [];
   const s = String(raw).trim().toLowerCase();
-  const hit = choices.find((c) => c.value.toLowerCase() === s || c.label.toLowerCase() === s);
+  // Stored values win over labels, so a renamed option can never capture another option's value.
+  const hit = choices.find((c) => c.value.toLowerCase() === s) ?? choices.find((c) => c.label.toLowerCase() === s);
   if (!hit) {
     throw new CrmError(
       `"${raw}" is not an option for ${field.key}. Valid: ${choices.map((c) => c.value).join(", ") || "(none yet)"}`,
@@ -129,6 +130,12 @@ export function checkDistinct<T extends { value: string; label: string }>(choice
       throw new CrmError(`Options "${other}" and "${c.label}" would both have the value "${c.value}". Rename one or give it a distinct value.`);
     }
     seen.set(c.value, c.label);
+  }
+  // A label that equals another option's value or label makes input ambiguous ("Qualified" could mean either).
+  for (const c of choices) {
+    const l = c.label.toLowerCase();
+    const clash = choices.find((o) => o !== c && (o.value.toLowerCase() === l || o.label.toLowerCase() === l));
+    if (clash) throw new CrmError(`Option "${c.label}" would be confused with option "${clash.label}" (value "${clash.value}"). Pick a different name.`);
   }
   return choices;
 }

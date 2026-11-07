@@ -1289,3 +1289,24 @@ describe("round 7 review", () => {
     assert.match(JSON.stringify(full.data), /zebra-secret/);
   });
 });
+
+describe("round 9 review", () => {
+  it("option labels can't be confused with other options, and values win over labels", async () => {
+    await rest("/objects", { body: { label: "Funnel", fields: [{ label: "Step", type: "select", choices: ["Lead", "Qualified"] }] } });
+    const step = () => rest("/schema").then((r) => r.data.objects.find((o: any) => o.slug === "funnels").fields.find((f: any) => f.key === "step"));
+    const f = await step();
+    // Rename Lead → "Qualified" and Qualified → "Sales accepted", keeping values: refused, it would be ambiguous.
+    const choices = f.options.choices.map((c: any) => ({ ...c, label: c.value === "lead" ? "Qualified" : "Sales accepted" }));
+    const r = await rest("/objects/funnels/fields/step", { method: "PATCH", body: { choices } });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /would be confused/);
+
+    // Data saved before this rule still resolves by value first.
+    await db`update field_defs set options = jsonb_set(options, '{choices}', ${db.json(choices)}) where id = ${f.id}`;
+    await rest("/objects/funnels/fields/step", { method: "PATCH", body: { description: "touch" } }); // refresh the schema cache
+    const rec = (await rest("/objects/funnels/records", { body: { name: "Deal A", step: "qualified" } })).data;
+    assert.equal(rec.data.step, "qualified");
+    const viaMcp = await mcp("update_record", { id: rec.id, data: { step: "qualified" } });
+    assert.equal((viaMcp.data.record ?? viaMcp.data).data.step, "qualified");
+  });
+});
