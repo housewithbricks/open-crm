@@ -102,20 +102,19 @@ export async function dashboard() {
     const open = stages.filter((s) => s.kind === "open");
 
     // Stage moves into won/lost, from the audit log (a record counts once, at its latest move).
-    const moves = async (values: string[], days: number) => {
+    const moves = async (values: string[], days: number | "month") => {
       if (!values.length) return { n: 0, amount: 0 };
       const [r] = await sql<{ n: number; amount: number }[]>`
         select count(distinct a.target_id)::int as n, coalesce(sum(distinct_amount), 0)::float as amount from (
           select distinct on (a.target_id) a.target_id, ${numField(amount.key, "r.data")} as distinct_amount
           from audit_log a join records r on r.id::text = a.target_id
           where a.object_slug = ${obj.slug} and a.action in ('record.create', 'record.update') and a.undone_at is null
-            and a.after->>${stage.key} = any(${values}::text[]) and a.created_at >= now() - make_interval(days => ${days})
+            and a.after->>${stage.key} = any(${values}::text[]) and a.created_at >= ${days === "month" ? sql`date_trunc('month', now())` : sql`now() - make_interval(days => ${days})`}
             and r.deleted_at is null and r.data->>${stage.key} = any(${values}::text[])
           order by a.target_id, a.created_at desc) a`;
       return r;
     };
-    const startOfMonth = Math.ceil((now - new Date(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1).getTime()) / DAY);
-    const wonMonth = await moves(wonValues, startOfMonth);
+    const wonMonth = await moves(wonValues, "month");
     const won90 = await moves(wonValues, 90);
     const lost90 = await moves(lostValues, 90);
 

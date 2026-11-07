@@ -387,8 +387,20 @@ async function convertFieldType(tx: Db, obj: ObjectType, f: FieldDef, type: Fiel
         const s = String(x).trim();
         if (s && !optionFor.has(s.toLowerCase()) && !extra.some((e) => e.toLowerCase() === s.toLowerCase())) extra.push(s);
       }
-    normalizeChoices(extra, { allowSame: true }).forEach((c, i) => {
-      // Two raw values can share a slug ("Big Co", "big-co"): they become one option.
+    const norm = normalizeChoices(extra, { allowSame: true });
+    // Two different values that share a slug ("A/B" and "A B") would merge into one option and lose
+    // the difference, and a type change can't be undone, so refuse before anything is written.
+    const bySlug = new Map<string, string>();
+    for (const c of choices) bySlug.set(c.value, c.label);
+    const clashes: string[] = [];
+    norm.forEach((c, i) => {
+      const other = bySlug.get(c.value);
+      if (other !== undefined && other.toLowerCase() !== extra[i].toLowerCase()) clashes.push(`"${other}" and "${extra[i]}"`);
+      else bySlug.set(c.value, extra[i]);
+    });
+    if (clashes.length)
+      throw new CrmError(`Can't convert: ${clashes.slice(0, 5).join(", ")} would become the same option. Make them distinct first.`, 409);
+    norm.forEach((c, i) => {
       const hit = choices.find((x) => x.value === c.value);
       if (!hit) choices.push({ ...c, color: c.color });
       optionFor.set(extra[i].toLowerCase(), hit?.value ?? c.value);

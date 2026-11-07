@@ -550,11 +550,16 @@ describe("review fixes", () => {
     assert.equal((await rest("/changes?status=pending")).data.some((c: any) => c.id === req.data.change_request.id), true);
 
     // text → select: every distinct value becomes an option, however many and however odd.
+    // "Big Co" and "big-co" would merge into one option and lose the difference, so it's refused until they match.
+    const clash = await rest("/objects/gadgets/fields/maker", { method: "PATCH", body: { type: "select" } });
+    assert.equal(clash.status, 409);
+    assert.match(clash.data.error, /"Big Co" and "big-co" would become the same option/);
+    await rest(`/records/${g2.id}`, { method: "PATCH", body: { maker: "Big Co" } });
     assert.equal((await rest("/objects/gadgets/fields/maker", { method: "PATCH", body: { type: "select" } })).status, 200);
     const maker = (await rest("/schema")).data.objects.find((o: any) => o.slug === "gadgets").fields.find((f: any) => f.key === "maker");
     const values = maker.options.choices.map((c: any) => c.value);
     for (const g of [g1, g2, g3]) assert.ok(values.includes((await rest(`/records/${g.id}`)).data.record.data.maker), "stored value is an option");
-    assert.equal((await rest(`/records/${g1.id}`)).data.record.data.maker, (await rest(`/records/${g2.id}`)).data.record.data.maker, '"Big Co" and "big-co" share an option');
+    assert.equal((await rest(`/records/${g1.id}`)).data.record.data.maker, (await rest(`/records/${g2.id}`)).data.record.data.maker, 'same value, same option');
 
     // A stray string in a number field (old data, manual edit) doesn't break sort, filters or the dashboard.
     const d = (await rest("/objects/deals/records", { body: { name: "Stray", amount: 5 } })).data;
@@ -1115,5 +1120,17 @@ describe("round 4 fixes", () => {
     ] as const) {
       assert.equal((await rest(path, { body })).status, 400, `${path} ${JSON.stringify(body)}`);
     }
+  });
+});
+
+describe("round 5 fixes", () => {
+  it("won this month starts at the first of the month", async () => {
+    const before = (await rest("/dashboard")).data.pipeline.won_this_month;
+    const deal = (await rest("/objects/deals/records", { body: { name: "Last month's win", amount: 4321, stage: "won" } })).data;
+    // Pretend the win happened an hour before this month began.
+    await db`update audit_log set created_at = date_trunc('month', now()) - interval '1 hour' where target_id = ${deal.id}`;
+    const afterWin = (await rest("/dashboard")).data.pipeline.won_this_month;
+    assert.equal(afterWin.n, before.n);
+    assert.equal(afterWin.amount, before.amount);
   });
 });
