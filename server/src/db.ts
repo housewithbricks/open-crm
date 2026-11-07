@@ -10,11 +10,9 @@ function sslOption() {
   throw new Error(`DATABASE_SSL must be one of require, prefer, verify-full, disable (got "${config.databaseSsl}")`);
 }
 
-export const sql = postgres(config.databaseUrl, {
-  max: Number(process.env.DATABASE_POOL_SIZE ?? 10),
-  onnotice: () => {},
-  ssl: sslOption(),
-});
+const options = { max: Number(process.env.DATABASE_POOL_SIZE ?? 10), onnotice: () => {}, ssl: sslOption() };
+// With no URL, postgres.js reads PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE itself.
+export const sql = config.databaseUrl ? postgres(config.databaseUrl, options) : postgres(options);
 
 export type Sql = typeof sql;
 /** The pool or an open transaction: core helpers that take one can run inside either. */

@@ -21,7 +21,7 @@ Open CRM is **one container plus Postgres**. Anything that can run a Docker imag
 
 | Variable | Required | What it does |
 |---|---|---|
-| `DATABASE_URL` | yes | Postgres connection string, e.g. `postgres://user:pass@host:5432/db`. Postgres 14+ works; 17 is used in development. |
+| `DATABASE_URL` | yes* | Postgres connection string, e.g. `postgres://user:pass@host:5432/db`. Percent-encode special characters in the password (`/` → `%2F`, `@` → `%40`). Postgres 14+ works; 17 is used in development. *Or leave it unset and set `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE`, which take any password as written (the docker compose files do this). |
 | `ADMIN_PASSWORD` | recommended | Password for the web UI. If unset, the app generates one on first boot and **prints it to the logs** once. Placeholder values like `change-me` are rejected in production. |
 | `PORT` | no | Port to listen on (default `8080`). Most platforms set it for you. |
 | `PUBLIC_URL` | no | Your public base URL (e.g. `https://crm.example.com`). Used to show the right MCP URL in the UI. |
