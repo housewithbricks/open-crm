@@ -3,7 +3,7 @@ import { transaction } from "./audit.js";
 import { UUID_RE } from "./fields.js";
 import { insertRecord, listRecords, upsertIn } from "./records.js";
 import { applyFieldUpdate, getObject, invalidateSchema } from "./schema.js";
-import { CrmError, requireScope, type Actor, type FieldDef, type ObjectType } from "./types.js";
+import { CrmError, requireScope, requireSourceFor, type Actor, type FieldDef, type ObjectType } from "./types.js";
 
 const MAX_ROWS = 5000;
 
@@ -71,6 +71,7 @@ const unescapeCell = (v: unknown) => (typeof v === "string" && /^'[=+\-@\t\r]/.t
  */
 export async function importRows(actor: Actor, slug: string, rows: Record<string, unknown>[], opts: ImportOptions = {}): Promise<ImportResult> {
   requireScope(actor, "write");
+  requireSourceFor(actor);
   if (!Array.isArray(rows)) throw new CrmError("rows must be an array");
   if (rows.length > MAX_ROWS) throw new CrmError(`Too many rows (${rows.length}); the limit is ${MAX_ROWS} per import`);
   const first = await getObject(slug);

@@ -74,6 +74,8 @@ export type Actor = {
   scopes: Scope[];
   /** Set per call, for the writes of that call only. */
   source?: Source;
+  /** The API key was created to refuse record and activity writes without a source. */
+  requireSource?: boolean;
 };
 
 export const userActor: Actor = { type: "user", name: "You", scopes: ["read", "write", "schema"] };
@@ -120,6 +122,19 @@ export function checkSource(input: unknown): Source | undefined {
   if (label !== undefined && label !== null && typeof label !== "string") throw new CrmError("source.label must be a string");
   const text = typeof label === "string" ? label.trim().slice(0, 200) : "";
   return text ? { url: parsed.href, label: text } : { url: parsed.href };
+}
+
+/**
+ * Refuse a record or activity write from a key that must say where its writes come from.
+ * Called at the top of each write in core, so REST and MCP enforce it the same way.
+ */
+export function requireSourceFor(actor: Actor) {
+  if (actor.requireSource && !actor.source) {
+    throw new CrmError(
+      `The API key "${actor.name}" must link each change to its source. Pass source {url, label} (MCP) or the X-Source-Url header (REST). Nothing was changed.`,
+      400,
+    );
+  }
 }
 
 /** The actor for one call, carrying that call's source (if any). */

@@ -249,6 +249,14 @@ const migrations: { id: number; name: string; sql: string }[] = [
       alter table activities add column source jsonb;
     `,
   },
+  {
+    id: 9,
+    name: "key_require_source",
+    sql: /* sql */ `
+      -- A key with this set can't write records or activities without a source link.
+      alter table api_keys add column require_source boolean not null default false;
+    `,
+  },
 ];
 
 export async function migrate() {

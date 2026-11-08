@@ -1399,3 +1399,102 @@ describe("source links", () => {
     }
   });
 });
+
+describe("keys that require a source", () => {
+  it("refuses record and activity writes without a source, over MCP and REST, and can be turned on later", async () => {
+    const k = (await rest("/keys", { body: { name: "Inbox agent", scopes: ["read", "write"], require_source: true } })).data;
+    assert.equal(k.require_source, true);
+    const email = { url: "https://mail.example.com/inbox/req1", label: "Email from Sam" };
+
+    const refused = await mcp("create_record", { object: "companies", data: { name: "No source co" } }, k.key);
+    assert.match(refused.error!, /must link each change to its source/);
+    assert.equal((await rest("/objects/companies/records?q=No%20source%20co")).data.total, 0);
+    assert.match((await mcp("bulk_upsert_records", { object: "companies", match_on: "name", records: [{ name: "Bulk co" }] }, k.key)).error!, /source/);
+
+    const ok = await mcp("create_record", { object: "companies", data: { name: "Sourced co" }, source: email }, k.key);
+    assert.equal(ok.error, undefined);
+    assert.match((await mcp("update_record", { id: ok.data.id, data: { name: "Sourced co 2" } }, k.key)).error!, /source/);
+    assert.match((await mcp("log_activity", { record_ids: [ok.data.id], kind: "note", body: "hi" }, k.key)).error!, /source/);
+    assert.match((await mcp("archive_record", { id: ok.data.id }, k.key)).error!, /source/);
+
+    // REST: the header satisfies it; without it, 400 and nothing changes.
+    const patch = (headers: Record<string, string>) =>
+      fetch(`${BASE}/api/records/${ok.data.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", authorization: `Bearer ${k.key}`, ...headers },
+        body: JSON.stringify({ name: "Via REST" }),
+      });
+    assert.equal((await patch({})).status, 400);
+    assert.equal((await rest(`/records/${ok.data.id}`)).data.record.data.name, "Sourced co");
+    assert.equal((await patch({ "x-source-url": email.url })).status, 200);
+
+    // Reads and the signed-in user are unaffected.
+    assert.equal((await rest("/schema", { bearer: k.key })).status, 200);
+    assert.equal((await rest(`/records/${ok.data.id}`, { method: "PATCH", body: { name: "By me" } })).status, 200);
+
+    // Turn it on for an existing key; it applies on the next request.
+    const plain = (await rest("/keys", { body: { name: "Plain agent", scopes: ["write"] } })).data;
+    assert.equal(plain.require_source, false);
+    assert.equal((await mcp("create_record", { object: "companies", data: { name: "Before" } }, plain.key)).error, undefined);
+    const upd = await rest(`/keys/${plain.id}`, { method: "PATCH", body: { require_source: true } });
+    assert.equal(upd.data.require_source, true);
+    assert.match((await mcp("create_record", { object: "companies", data: { name: "After" } }, plain.key)).error!, /source/);
+    assert.equal((await rest(`/keys/${plain.id}`, { method: "PATCH", body: { require_source: "yes" } })).status, 400);
+    assert.equal((await rest(`/keys/not-a-uuid`, { method: "PATCH", body: { require_source: true } })).status, 404);
+    // Only the signed-in user manages keys.
+    assert.equal((await rest(`/keys/${plain.id}`, { method: "PATCH", body: { require_source: false }, bearer: key })).status, 403);
+  });
+});
+
+describe("bulk undo", () => {
+  it("previews, then undoes one key's changes in a window, newest first, leaving others' later edits alone", async () => {
+    const k = (await rest("/keys", { body: { name: "Cleanup bot", scopes: ["read", "write"] } })).data.key;
+    const mine = (await rest("/objects/companies/records", { body: { name: "Bulk keep", domain: "bulk-keep.example" } })).data;
+    // Audit times come from the database's clock, which can differ from this process's.
+    const since = (await db`select now()`)[0].now.toISOString();
+
+    const created = (await mcp("create_record", { object: "companies", data: { name: "Bot made" } }, k)).data;
+    await mcp("update_record", { id: created.id, data: { name: "Bot made 2" } }, k);
+    await mcp("update_record", { id: mine.id, data: { name: "Bot renamed" } }, k);
+    const contested = (await mcp("create_record", { object: "companies", data: { name: "Contested" } }, k)).data;
+    const note = (await mcp("log_activity", { record_ids: [mine.id], kind: "note", body: "bot note" }, k)).data;
+    // Someone else edits a record the bot made, afterwards.
+    await rest(`/records/${contested.id}`, { method: "PATCH", body: { name: "Contested (fixed by me)" } });
+
+    const preview = (await rest("/audit/undo-batch", { body: { actor: "Cleanup bot", since } })).data;
+    assert.equal(preview.undo.length, 4);
+    assert.deepEqual(preview.undo.map((e: any) => e.action), ["activity.create", "record.update", "record.update", "record.create"]);
+    assert.equal(preview.conflicts.length, 1);
+    assert.equal(preview.conflicts[0].target_id, contested.id);
+    assert.equal(preview.conflicts[0].changed_by.actor_type, "user");
+    // The preview changed nothing.
+    assert.equal((await rest(`/records/${mine.id}`)).data.record.data.name, "Bot renamed");
+
+    // A write after the preview's `until` is not included when applying.
+    await new Promise((r) => setTimeout(r, 20));
+    const late = (await mcp("create_record", { object: "companies", data: { name: "Late" } }, k)).data;
+
+    const res = (await rest("/audit/undo-batch", { body: { actor: "Cleanup bot", since, until: preview.until, apply: true } })).data;
+    assert.equal(res.undone.length, 4);
+    assert.deepEqual(res.failed, []);
+    assert.equal(res.conflicts, 1);
+
+    assert.equal((await rest(`/records/${mine.id}`)).data.record.data.name, "Bulk keep");
+    assert.equal((await rest(`/records/${created.id}`)).status, 404);
+    assert.equal((await rest(`/records/${contested.id}`)).data.record.data.name, "Contested (fixed by me)");
+    assert.equal((await rest(`/records/${late.id}`)).status, 200);
+    const tl = (await rest(`/records/${mine.id}/timeline`)).data as any[];
+    assert.ok(!tl.some((t) => t.type === "activity" && t.id === note.id));
+
+    // Running it again finds nothing left but the conflict.
+    const again = (await rest("/audit/undo-batch", { body: { actor: "Cleanup bot", since, until: preview.until } })).data;
+    assert.equal(again.undo.length, 0);
+    assert.equal(again.conflicts.length, 1);
+
+    // Agents can't run it, and bad input is a 400.
+    assert.equal((await rest("/audit/undo-batch", { body: { actor: "Cleanup bot", since }, bearer: key })).status, 403);
+    assert.equal((await rest("/audit/undo-batch", { body: { actor: "Cleanup bot" } })).status, 400);
+    assert.equal((await rest("/audit/undo-batch", { body: { actor: "Cleanup bot", since: "nope" } })).status, 400);
+    assert.ok(((await rest("/audit/actors")).data as any[]).some((a) => a.actor_name === "Cleanup bot" && a.changes >= 5));
+  });
+});

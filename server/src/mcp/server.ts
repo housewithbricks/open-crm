@@ -87,7 +87,10 @@ async function listViewsById(id: string) {
 }
 
 export function buildMcpServer(actor: Actor) {
-  const server = new McpServer({ name: "open-crm", version: VERSION }, { instructions: INSTRUCTIONS });
+  const instructions = actor.requireSource
+    ? `${INSTRUCTIONS}\n- This key requires a source on every record, activity and task write. Writes without one are refused.`
+    : INSTRUCTIONS;
+  const server = new McpServer({ name: "open-crm", version: VERSION }, { instructions });
   const can = (s: Actor["scopes"][number]) => actor.scopes.includes(s);
   const ro = { readOnlyHint: true, openWorldHint: false };
 

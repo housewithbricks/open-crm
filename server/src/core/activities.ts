@@ -2,7 +2,7 @@ import { json, sql, type Db } from "../db.js";
 import { audit, transaction } from "./audit.js";
 import { toDay, UUID_RE } from "./fields.js";
 import { writeReply } from "./records.js";
-import { CrmError, notFound, requireScope, type Actor } from "./types.js";
+import { CrmError, notFound, requireScope, requireSourceFor, type Actor } from "./types.js";
 
 export const ACTIVITY_KINDS = ["note", "call", "email", "meeting", "task"] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -78,6 +78,7 @@ export async function logActivity(
   input: { record_id?: string | null; record_ids?: string[]; kind: ActivityKind; title?: string; body?: string; due_at?: string | null },
 ) {
   requireScope(actor, "write");
+  requireSourceFor(actor);
   if (!ACTIVITY_KINDS.includes(input.kind)) throw new CrmError(`kind must be one of ${ACTIVITY_KINDS.join(", ")}`);
   checkText(input);
   if (input.kind === "task" && !input.title) throw new CrmError("Tasks need a title");
@@ -126,6 +127,7 @@ export async function updateActivity(
   opts: { taskOnly?: boolean } = {},
 ) {
   requireScope(actor, "write");
+  requireSourceFor(actor);
   if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
   checkText(patch);
   await transaction(async (tx) => {
@@ -159,6 +161,7 @@ export async function updateActivity(
 /** Soft delete: the activity disappears everywhere but can be brought back from the audit log. */
 export async function deleteActivity(actor: Actor, id: string) {
   requireScope(actor, "write");
+  requireSourceFor(actor);
   if (!UUID_RE.test(id)) throw new CrmError(`"${id}" is not an activity id`);
   await transaction(async (tx) => {
     const [row] = await tx<Activity[]>`update activities set deleted_at = now() where id = ${id} and deleted_at is null returning id`;

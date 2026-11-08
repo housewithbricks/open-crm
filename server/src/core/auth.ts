@@ -90,20 +90,32 @@ export async function signOutEverywhere() {
 
 const VALID_SCOPES: Scope[] = ["read", "write", "schema"];
 
-export async function createApiKey(name: string, scopes: Scope[]) {
+export async function createApiKey(name: string, scopes: Scope[], requireSource = false) {
   if (typeof name !== "string" || !name.trim()) throw new CrmError("Key needs a name");
   if (!Array.isArray(scopes)) throw new CrmError("scopes must be a list");
   const s = scopes.filter((x) => VALID_SCOPES.includes(x));
   if (!s.length) throw new CrmError("Pick at least one scope");
   const key = `ocrm_${randomBytes(24).toString("base64url")}`;
-  const [row] = await sql`insert into api_keys (name, prefix, key_hash, scopes)
-    values (${name.trim()}, ${key.slice(0, 10)}, ${sha256(key)}, ${s}::text[])
-    returning id, name, prefix, scopes, created_at`;
+  if (typeof requireSource !== "boolean") throw new CrmError("require_source must be true or false");
+  const [row] = await sql`insert into api_keys (name, prefix, key_hash, scopes, require_source)
+    values (${name.trim()}, ${key.slice(0, 10)}, ${sha256(key)}, ${s}::text[], ${requireSource})
+    returning id, name, prefix, scopes, require_source, created_at`;
   return { ...row, key };
 }
 
 export const listApiKeys = () =>
-  sql`select id, name, prefix, scopes, last_used_at, created_at from api_keys where revoked_at is null order by created_at desc`;
+  sql`select id, name, prefix, scopes, require_source, last_used_at, created_at from api_keys where revoked_at is null order by created_at desc`;
+
+/** Turn "every write needs a source" on or off for a key. Takes effect on its next request. */
+export async function updateApiKey(id: string, patch: { require_source?: unknown }) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CrmError("API key not found", 404);
+  if (typeof patch.require_source !== "boolean") throw new CrmError("require_source must be true or false");
+  const [row] = await sql`update api_keys set require_source = ${patch.require_source}
+    where id = ${id} and revoked_at is null
+    returning id, name, prefix, scopes, require_source, last_used_at, created_at`;
+  if (!row) throw new CrmError("API key not found", 404);
+  return row;
+}
 
 export async function revokeApiKey(id: string) {
   await sql`update api_keys set revoked_at = now() where id = ${id}`;
@@ -112,8 +124,8 @@ export async function revokeApiKey(id: string) {
 
 export async function actorFromApiKey(key?: string): Promise<Actor | null> {
   if (!key?.startsWith("ocrm_")) return null;
-  const [row] = await sql<{ id: string; name: string; scopes: Scope[] }[]>`
+  const [row] = await sql<{ id: string; name: string; scopes: Scope[]; require_source: boolean }[]>`
     update api_keys set last_used_at = now() where key_hash = ${sha256(key)} and revoked_at is null
-    returning id, name, scopes`;
-  return row ? { type: "agent", name: row.name, scopes: row.scopes } : null;
+    returning id, name, scopes, require_source`;
+  return row ? { type: "agent", name: row.name, scopes: row.scopes, requireSource: row.require_source } : null;
 }

@@ -24,6 +24,8 @@ Every record, note and task write tool (`create_record`, `update_record`, `upser
 
 The change shows a **Source** link in the record timeline and the audit log, so you can open the email (or doc, meeting, ticket) right from the change. It is also in webhook payloads as `source`. Only `http://` and `https://` links are accepted. Labels are cut to 200 characters.
 
+**Requiring a source.** For a key that acts on things you can link to, such as an agent that reads your inbox, turn on **Require a source** when you create the key (or with the **Needs source** switch in the key list). Its record, note and task writes are then refused without a `source`, with an error that says so, and nothing is changed. Reads and schema changes are not affected. The key's MCP instructions tell the agent about the rule.
+
 Below, replace `https://YOUR-HOST` with your Open CRM address and `ocrm_…` with your key.
 
 ---

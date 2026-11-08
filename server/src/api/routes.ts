@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { deleteActivity, listTasks, logActivity, timeline, updateActivity } from "../core/activities.js";
 import { listAudit } from "../core/audit.js";
-import { actorFromApiKey, createApiKey, listApiKeys, login, revokeApiKey, signOutEverywhere, verifySession } from "../core/auth.js";
+import { actorFromApiKey, createApiKey, listApiKeys, updateApiKey, login, revokeApiKey, signOutEverywhere, verifySession } from "../core/auth.js";
 import { decideChange, editField, listChanges, requestOrApply } from "../core/changes.js";
 import {
   archiveRecord,
@@ -23,7 +23,7 @@ import { config } from "../config.js";
 import { getUiSettings, updateUiSettings } from "../core/settings.js";
 import { dashboard } from "../core/dashboard.js";
 import { exportCsv, importRows } from "../core/importer.js";
-import { undoEntry, UNDOABLE } from "../core/undo.js";
+import { applyBatchUndo, listAuditActors, planBatchUndo, undoEntry, UNDOABLE } from "../core/undo.js";
 import { createView, deleteView, listViews, updateView } from "../core/views.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhook, updateWebhook, WEBHOOK_EVENTS } from "../core/webhooks.js";
 
@@ -278,6 +278,16 @@ api.get("/audit", async (c) => {
   const rows = await listAudit(intParam(c.req.query("limit"), "limit", 200, 1000));
   return c.json(rows.map((r) => ({ ...r, undoable: UNDOABLE.has(r.action) && !r.undone_at })));
 });
+api.get("/audit/actors", async (c) => c.json(await listAuditActors()));
+/**
+ * Undo everything one actor (usually an API key) did in a time window. Without apply: true it
+ * only previews. Send back the preview's `until` with apply so nothing newer slips in.
+ */
+api.post("/audit/undo-batch", async (c) => {
+  userOnly(c);
+  const { apply, ...filter } = await jsonBody(c);
+  return c.json(apply === true ? await applyBatchUndo(c.get("actor"), filter) : await planBatchUndo(filter));
+});
 api.post("/audit/:id/undo", async (c) => {
   userOnly(c);
   const { force } = await jsonBody(c).catch(() => ({ force: false }));
@@ -331,8 +341,12 @@ api.get("/keys", async (c) => {
 });
 api.post("/keys", async (c) => {
   userOnly(c);
-  const { name, scopes } = await jsonBody(c);
-  return c.json(await createApiKey(name ?? "", scopes ?? []));
+  const { name, scopes, require_source } = await jsonBody(c);
+  return c.json(await createApiKey(name ?? "", scopes ?? [], require_source ?? false));
+});
+api.patch("/keys/:id", async (c) => {
+  userOnly(c);
+  return c.json(await updateApiKey(c.req.param("id"), await jsonBody(c)));
 });
 api.delete("/keys/:id", async (c) => {
   userOnly(c);

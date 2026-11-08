@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Table, Td, Th, Tr } from "../components/table";
-import { Button, Card, Copyable, ErrorBox, Hint, Input, Label, Modal, ModalActions, PageHead, Segmented } from "../components/ui";
+import { Button, Card, Copyable, ErrorBox, Hint, Input, Label, Modal, ModalActions, PageHead, Segmented, Switch } from "../components/ui";
 import { api, invalidateAll, type ApiKey } from "../lib/api";
 import { timeAgo } from "../lib/format";
 
@@ -17,6 +17,10 @@ export default function Keys() {
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<(ApiKey & { key: string }) | null>(null);
   const revoke = useMutation({ mutationFn: (id: string) => api(`/keys/${id}`, { method: "DELETE" }), onSuccess: invalidateAll });
+  const setRequire = useMutation({
+    mutationFn: ({ id, on }: { id: string; on: boolean }) => api(`/keys/${id}`, { method: "PATCH", body: { require_source: on } }),
+    onSuccess: invalidateAll,
+  });
   const url = me?.mcp_url ?? `${location.origin}/mcp`;
 
   return (
@@ -32,14 +36,16 @@ export default function Keys() {
         </Card>
       )}
 
+      <ErrorBox error={setRequire.error} />
       <Table>
-        <thead><tr><Th>Name</Th><Th>Key</Th><Th>Scopes</Th><Th>Last used</Th><Th /></tr></thead>
+        <thead><tr><Th>Name</Th><Th>Key</Th><Th>Scopes</Th><Th title="Refuse record, note and task writes that don't link to a source">Needs source</Th><Th>Last used</Th><Th /></tr></thead>
         <tbody>
           {keys?.map((k) => (
             <Tr key={k.id}>
               <Td className="font-medium">{k.name}</Td>
               <Td><code>{k.prefix}…</code></Td>
               <Td className="text-muted">{k.scopes.join(", ")}</Td>
+              <Td><Switch checked={k.require_source} label={`Require a source for ${k.name}`} onChange={(on) => setRequire.mutate({ id: k.id, on })} /></Td>
               <Td className="text-muted">{k.last_used_at ? timeAgo(k.last_used_at) : "Never"}</Td>
               <Td className="text-right"><Button size="sm" variant="ghost" onClick={() => confirm(`Revoke key "${k.name}"? Agents using it will lose access.`) && revoke.mutate(k.id)}>Revoke</Button></Td>
             </Tr>
@@ -133,8 +139,9 @@ function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const id = useId();
   const [name, setName] = useState("Claude");
   const [scopes, setScopes] = useState(["read", "write", "schema"]);
+  const [requireSource, setRequireSource] = useState(false);
   const create = useMutation({
-    mutationFn: () => api<ApiKey & { key: string }>("/keys", { body: { name, scopes } }),
+    mutationFn: () => api<ApiKey & { key: string }>("/keys", { body: { name, scopes, require_source: requireSource } }),
     onSuccess: (k) => { invalidateAll(); onCreated(k); },
   });
   return (
@@ -152,6 +159,10 @@ function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
           </label>
         ))}
         </div>
+        <label className="mt-2 flex cursor-pointer items-start gap-2 py-1">
+          <input type="checkbox" className="square mt-0.5" checked={requireSource} onChange={(e) => setRequireSource(e.target.checked)} />
+          <span><span className="font-medium">Require a source</span><br /><span className="text-muted">Refuse record, note and task writes that don't link to what they're based on, like the email an agent read.</span></span>
+        </label>
         <ErrorBox error={create.error} />
         <ModalActions>
           <Button onClick={onClose}>Cancel</Button>

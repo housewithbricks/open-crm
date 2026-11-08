@@ -180,3 +180,117 @@ async function undoFieldUpdate(actor: Actor, e: Entry, force: boolean) {
     invalidateSchema();
   }
 }
+
+/* -------------------------------- bulk undo -------------------------------- */
+
+const MAX_BATCH = 2000;
+
+export type BatchFilter = { actor?: unknown; actor_type?: unknown; since?: unknown; until?: unknown };
+
+type BatchRow = Entry & { actor_type: string; actor_name: string; created_at: string; source: unknown };
+
+function parseTime(v: unknown, name: string) {
+  if (typeof v !== "string" || !v.trim()) throw new CrmError(`${name} is required (an ISO date or time)`);
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) throw new CrmError(`${name} is not a valid date or time`);
+  return d;
+}
+
+/**
+ * Work out what undoing everything one actor did in a time window would do, without changing
+ * anything. Each entry lands in one group:
+ * - undo: will be undone, newest first.
+ * - conflicts: someone else changed the same record, activity or field afterwards. These are
+ *   left alone; undo them one by one from the audit log if you still want to.
+ * - not_undoable: actions that can't be undone (e.g. a field type change).
+ * Entries already undone are left out.
+ */
+export async function planBatchUndo(filter: BatchFilter) {
+  if (typeof filter.actor !== "string" || !filter.actor.trim()) throw new CrmError("actor is required (the API key's name)");
+  const actorType = filter.actor_type ?? "agent";
+  if (actorType !== "agent" && actorType !== "user") throw new CrmError(`actor_type must be "agent" or "user"`);
+  const since = parseTime(filter.since, "since");
+  // Default to the database's clock: audit times come from it, and the app's clock can differ.
+  const until = filter.until === undefined || filter.until === null || filter.until === ""
+    ? (await sql<{ now: Date }[]>`select now()`)[0].now
+    : parseTime(filter.until, "until");
+  if (until < since) throw new CrmError("until is before since");
+
+  const rows = await sql<BatchRow[]>`select * from audit_log
+    where actor_type = ${actorType} and actor_name = ${filter.actor} and undone_at is null
+      and created_at >= ${since} and created_at <= ${until}
+    order by id desc limit ${MAX_BATCH + 1}`;
+  if (rows.length > MAX_BATCH) throw new CrmError(`More than ${MAX_BATCH} changes in this window. Pick a shorter one.`);
+
+  // Later changes by anyone else to the same targets.
+  const ids = rows.map((r) => r.id);
+  const targets = [...new Set(rows.map((r) => r.target_id).filter((t): t is string => !!t))];
+  const minId = ids.length ? ids[ids.length - 1] : "0";
+  const others = targets.length
+    ? await sql<{ id: string; target_id: string; actor_type: string; actor_name: string; created_at: string }[]>`
+        select id, target_id, actor_type, actor_name, created_at from audit_log
+        where target_id = any(${targets}) and id > ${minId} and not (id = any(${ids}::bigint[]))`
+    : [];
+  const laterBy = (e: BatchRow) =>
+    others.filter((o) => o.target_id === e.target_id && BigInt(o.id) > BigInt(e.id)).sort((a, b) => Number(BigInt(a.id) - BigInt(b.id)))[0];
+
+  const undo: BatchRow[] = [];
+  const conflicts: (BatchRow & { changed_by: { actor_type: string; actor_name: string; at: string } })[] = [];
+  const notUndoable: BatchRow[] = [];
+  const blocked = new Set<string>(); // targets with a newer change we won't undo
+  for (const e of rows) {
+    const later = laterBy(e);
+    if (later) {
+      conflicts.push({ ...e, changed_by: { actor_type: later.actor_type, actor_name: later.actor_name, at: later.created_at } });
+      if (e.target_id) blocked.add(e.target_id);
+    } else if (!UNDOABLE.has(e.action)) {
+      notUndoable.push(e);
+      if (e.target_id) blocked.add(e.target_id);
+    } else if (e.target_id && blocked.has(e.target_id)) {
+      // A newer change to this target by the same actor is staying, so this one stays too.
+      notUndoable.push(e);
+    } else {
+      undo.push(e);
+    }
+  }
+  return {
+    actor: filter.actor,
+    actor_type: actorType,
+    since: since.toISOString(),
+    until: until.toISOString(),
+    undo,
+    conflicts,
+    not_undoable: notUndoable,
+  };
+}
+
+/**
+ * Undo everything planBatchUndo would, newest first. Pass the `until` the preview returned so a
+ * key still writing can't add changes you didn't see. An entry that fails (e.g. it changed
+ * between the preview and now) is reported, and older entries on the same target are skipped.
+ */
+export async function applyBatchUndo(actor: Actor, filter: BatchFilter) {
+  const plan = await planBatchUndo(filter);
+  const undone: string[] = [];
+  const failed: { id: string; action: string; error: string }[] = [];
+  const stopped = new Set<string>();
+  for (const e of plan.undo) {
+    if (e.target_id && stopped.has(e.target_id)) {
+      failed.push({ id: e.id, action: e.action, error: "Skipped: a newer change to the same item couldn't be undone" });
+      continue;
+    }
+    try {
+      await undoEntry(actor, e.id, false);
+      undone.push(e.id);
+    } catch (err) {
+      if (e.target_id) stopped.add(e.target_id);
+      failed.push({ id: e.id, action: e.action, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { ...plan, undo: undefined, undone, failed, conflicts: plan.conflicts.length, not_undoable: plan.not_undoable.length };
+}
+
+/** Who has changed things, for picking an actor to bulk undo. */
+export const listAuditActors = () =>
+  sql`select actor_type, actor_name, count(*)::int as changes, min(created_at) as first_at, max(created_at) as last_at
+      from audit_log group by actor_type, actor_name order by max(created_at) desc`;

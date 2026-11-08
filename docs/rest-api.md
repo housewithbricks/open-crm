@@ -30,7 +30,7 @@ These routes refuse API keys (`403`) and need a signed-in session:
 - webhooks: everything under `/api/webhooks`
 - API keys: everything under `/api/keys`
 - approving or rejecting a change request: `POST /api/changes/:id/approve`, `POST /api/changes/:id/reject`
-- undo: `POST /api/audit/:id/undo`
+- undo: `POST /api/audit/:id/undo`, `POST /api/audit/undo-batch`
 - appearance settings: `PATCH /api/settings`
 - sign out everywhere: `POST /api/logout-all`
 
@@ -44,6 +44,8 @@ X-Source-Label: Email%20from%20Dana   (optional; percent-encode anything that is
 ```
 
 The link is stored on the audit entry (and on a note or task you create). It is returned as `source` in the timeline and the audit log, and sent in webhook payloads. Only `http(s)` URLs are accepted; anything else is a `400`.
+
+A key created with `"require_source": true` must send `X-Source-Url` on every record and activity write, or it gets a `400` and nothing is changed.
 
 ## Errors
 
@@ -111,6 +113,8 @@ Field types: `text`, `long_text`, `number`, `currency`, `date`, `boolean`, `sele
 | `POST /api/changes/:id/approve`, `…/reject` | session | Decide a change request. |
 | `GET /api/audit?limit=200` | read | Audit log, newest first (`limit` at most 1000). Each entry says whether it is `undoable`. |
 | `POST /api/audit/:id/undo` | session | Undo an entry. Body `{"force": true}` overwrites changes made since. |
+| `POST /api/audit/undo-batch` | session | Undo everything one actor did in a window. Body `{"actor": "Key name", "since": "ISO time", "until"?: "ISO time", "actor_type"?: "agent" \| "user"}` returns a preview: `undo` (entries that will be undone, newest first), `conflicts` (left alone because someone else changed the same item afterwards) and `not_undoable`. Nothing changes until you send the same body with `"apply": true`; pass the preview's `until` so changes made after it aren't included. At most 2000 entries per window. |
+| `GET /api/audit/actors` | read | Who has made changes, with counts and the last change time. |
 | `GET /api/dashboard` | read | Pipeline, win rate, tasks and activity numbers. |
 | `GET /api/me` | any | Who the key or session is, and the MCP URL. |
 
@@ -120,5 +124,5 @@ Field types: `text`, `long_text`, `number`, `currency`, `date`, `boolean`, `sele
 |---|---|
 | `GET /api/settings`, `PATCH /api/settings` | Theme and accent color. Reading needs `read`; changing needs a session. |
 | `GET/POST /api/webhooks`, `PATCH/DELETE /api/webhooks/:id`, `POST /api/webhooks/:id/test` | Webhooks. |
-| `GET/POST /api/keys`, `DELETE /api/keys/:id` | API keys. |
+| `GET/POST /api/keys`, `PATCH/DELETE /api/keys/:id` | API keys. `POST` takes `{name, scopes, require_source?}`; `PATCH` takes `{require_source}`. |
 | `POST /api/logout-all` | Sign out every browser. API keys keep working. |
