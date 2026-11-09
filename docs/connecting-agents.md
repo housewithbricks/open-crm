@@ -24,6 +24,18 @@ Every record, note and task write tool (`create_record`, `update_record`, `upser
 
 The change shows a **Source** link in the record timeline and the audit log, so you can open the email (or doc, meeting, ticket) right from the change. It is also in webhook payloads as `source`. Only `http://` and `https://` links are accepted. Labels are cut to 200 characters.
 
+**Fingerprinting the source.** A link shows where the agent looked, not what it read. Add `source.text` with the text the agent read (for example the email body). Open CRM stores a fingerprint of it with the change and doesn't store the text. Later, `check_source` (or **check** next to the source link in the app) takes the source as it reads now and says whether it matches. Only the fingerprint is kept, so a mismatch can't show what changed.
+
+```json
+"source": { "url": "https://mail.google.com/…", "label": "Email from Dana", "text": "Hi team, we're ready to sign…" }
+```
+
+- Text is prepared as `text-v1`: Unicode NFC, each run of `White_Space` characters (spaces, tabs, line breaks, no-break spaces) becomes one space, then trimmed. Rewrapping and line endings don't matter, but any change to the words does.
+- The fingerprint is an HMAC-SHA256 with a random salt per write and a per-install key. The entries one call makes, such as a bulk upsert, share it, the same way they share the link. The key is stored in your Open CRM database, or in `SOURCE_DIGEST_KEY` if you set it, and is never sent to clients or webhooks. Someone who sees the value (a read key, a webhook receiver) can't test guesses of short texts like "Yes, approved" against it offline. They also can't tell that two separate writes were based on the same text. `check_source` answers only match or no match. Still, a key with the `read` scope can test one guess per call that way, so the fingerprint confirms content; it doesn't hide it. Someone with a database backup that includes the key can test guesses offline. If the key changes or is lost, older fingerprints can't be checked: the check says so instead of reporting a mismatch.
+- A mismatch means the text differs from what the agent sent. The source may have been edited, or the copy being checked may differ from what the agent got: quoted replies, a signature, or a different part of the email. For a firm answer, have the agent fetch the source the same way it did before and run `check_source`.
+
+If one of the agent's tools already hashes what it fetched, pass that hash as `source.digest`: `"sha256:<canon>:<hex>"`, where `canon` names how the tool prepared the bytes. If `canon` is left out (`"sha256:<hex>"`), it is stored as `unspecified`. The app shows these as *reported*, since Open CRM never saw the text. Open CRM can check them against new text only for the canons `text-v1` and `raw` (exact UTF-8 bytes, API only). Any other canon is checked against a new hash from the same tool. Don't let a model write a hash itself: it can't compute one.
+
 **Requiring a source.** For a key that acts on things you can link to, such as an agent that reads your inbox, turn on **Require a source** when you create the key (or with the **Needs source** switch in the key list). Its record, note and task writes are then refused without a `source`, with an error that says so, and nothing is changed. Reads and schema changes are not affected. The key's MCP instructions tell the agent about the rule.
 
 Below, replace `https://YOUR-HOST` with your Open CRM address and `ocrm_…` with your key.

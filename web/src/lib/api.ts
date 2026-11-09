@@ -26,7 +26,10 @@ export type RecordDetail = {
   related: { object: string; label: string; field: string; field_label: string; records: Ref[] }[];
 };
 /** Where a write came from, e.g. the email an agent read before changing a deal. */
-export type Source = { url: string; label?: string };
+export type Source = { url: string; label?: string; digest?: SourceDigest };
+/** A fingerprint of the source when the write was made. by "crm": Open CRM's keyed hash of text the caller sent; "client": the caller's own SHA-256. */
+export type SourceDigest = { alg: "sha256" | "hmac-sha256"; canon: string; value: string; by: "crm" | "client"; salt?: string; kid?: string };
+export type SourceCheck = { source: { url: string; label: string | null }; match: boolean };
 export type TimelineItem =
   | { type: "activity"; id: string; kind: string; title: string; body: string; due_at: string | null; done_at: string | null; actor_type: string; actor_name: string; created_at: string; links: Ref[]; source?: Source | null }
   | { type: "change"; id: string; action: string; actor_type: string; actor_name: string; before: any; after: any; source?: Source | null; created_at: string; undone_at: string | null };

@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { after, before, describe, it } from "node:test";
+import { createHash, createHmac } from "node:crypto";
 import postgres from "postgres";
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://opencrm:opencrm@localhost:5432/opencrm";
@@ -1397,6 +1398,169 @@ describe("source links", () => {
     } finally {
       recv.close();
     }
+  });
+});
+
+describe("source fingerprints", () => {
+  const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
+  const emailBody = "Hi team,\n\nWe're ready to sign the Q4 order for 40 seats.\n\nDana";
+
+  it("hashes source text an agent sends, keeps only the hash, and tells an edited source from an unchanged one", async () => {
+    const deal = (await mcp("create_record", { object: "deals", data: { name: "Fingerprint deal", stage: "Lead" } })).data;
+    const src = { url: "https://mail.example.com/inbox/fp1", label: "Email from Dana", text: emailBody };
+    assert.equal((await mcp("update_record", { id: deal.id, data: { stage: "Negotiation" }, source: src })).error, undefined);
+    await mcp("log_activity", { record_ids: [deal.id], kind: "email", body: "Ready to sign", source: src });
+
+    const change = await auditFor(deal.id, "record.update");
+    // Keyed with the install's secret, so the stored value can't be used to test guesses offline.
+    const [{ value: k }] = await db`select value from settings where key = 'source_digest_key'`;
+    const hmacKey = createHash("sha256").update(`open-crm source digest\n${k}`).digest();
+    const { salt, kid } = change.source.digest;
+    assert.match(salt, /^[0-9a-f]{32}$/);
+    assert.equal(kid, createHmac("sha256", hmacKey).update("open-crm source digest kid").digest("hex").slice(0, 16));
+    const expected = createHmac("sha256", hmacKey).update(`${salt}\n`).update("Hi team, We're ready to sign the Q4 order for 40 seats. Dana").digest("hex");
+    assert.deepEqual(change.source, { url: src.url, label: src.label, digest: { alg: "hmac-sha256", canon: "text-v1", value: expected, by: "crm", salt, kid } });
+    // The text itself is stored nowhere.
+    const [{ n }] = await db`select count(*)::int as n from audit_log where source::text like ${"%ready to sign the Q4%"}`;
+    assert.equal(n, 0);
+    const [{ m }] = await db`select count(*)::int as m from activities where source::text like ${"%ready to sign the Q4%"}`;
+    assert.equal(m, 0);
+
+    // Same text, rewrapped, with CRLFs and a no-break space: still a match.
+    const same = await mcp("check_source", { id: change.id, text: "  Hi team,\r\n\r\nWe're ready to sign the Q4\u00a0order for 40 seats.\r\n\r\nDana \n" });
+    assert.equal(same.data.match, true);
+    // The email was edited afterwards: mismatch.
+    const edited = await mcp("check_source", { id: change.id, text: emailBody.replace("40 seats", "25 seats") });
+    assert.equal(edited.data.match, false);
+    // Only the verdict: no hash of the text sent, which would let a read key tabulate guesses.
+    assert.deepEqual(Object.keys(edited.data).sort(), ["match", "source"]);
+
+    // Activities carry it too, checked by their uuid; over REST as well.
+    const tl = (await rest(`/records/${deal.id}/timeline`)).data as any[];
+    const act = tl.find((t) => t.type === "activity" && t.kind === "email");
+    // Same text, different salt: two entries based on the same text can't be linked by their fingerprints.
+    assert.notEqual(act.source.digest.value, expected);
+    assert.notEqual(act.source.digest.salt, salt);
+    assert.equal((await mcp("check_source", { id: act.id, text: emailBody })).data.match, true);
+    const viaRest = await rest(`/activities/${act.id}/check-source`, { body: { text: emailBody + " PS" } });
+    assert.equal(viaRest.status, 200);
+    assert.equal(viaRest.data.match, false);
+    assert.equal((await rest(`/audit/${change.id}/check-source`, { body: { text: emailBody } })).data.match, true);
+    // Emptied source: a mismatch, not an error. A keyed fingerprint can't be checked hash to hash.
+    assert.equal((await mcp("check_source", { id: change.id, text: "" })).data.match, false);
+    assert.match((await mcp("check_source", { id: change.id, digest: `sha256:text-v1:${expected}` })).error!, /only be checked against text/);
+    assert.equal((await rest(`/activities/not-a-uuid/check-source`, { body: { text: "x" } })).status, 404);
+    // A deleted note can't be checked any more.
+    assert.equal((await rest(`/activities/${act.id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await rest(`/activities/${act.id}/check-source`, { body: { text: emailBody } })).status, 404);
+    // ...but the audit entry that logged it is still in the audit log, and still checkable.
+    const actCreate = ((await rest("/audit?limit=500")).data as any[]).find((a) => a.action === "activity.create" && a.target_id === act.id);
+    assert.ok(actCreate, "activity.create audit entry");
+    assert.equal((await rest(`/audit/${actCreate.id}/check-source`, { body: { text: emailBody } })).data.match, true);
+    // One call, one source: a bulk upsert's entries share the fingerprint, as they share the link.
+    const bulk = await mcp("bulk_upsert_records", { object: "companies", match_on: "name", records: [{ name: "Bulk fp 1" }, { name: "Bulk fp 2" }], source: src });
+    assert.equal(bulk.error, undefined);
+    const bulkSalts = ((await rest("/audit?limit=500")).data as any[]).filter((a) => /^Bulk fp/.test(a.after?.name ?? "")).map((a) => a.source.digest.salt);
+    assert.equal(bulkSalts.length, 2);
+    assert.equal(bulkSalts[0], bulkSalts[1]);
+    assert.notEqual(bulkSalts[0], salt);
+
+    // Made with another key (SOURCE_DIGEST_KEY changed or lost): "can't check", never a false "edited".
+    await db`update audit_log set source = jsonb_set(source, '{digest,kid}', '"0000000000000000"') where id = ${change.id}`;
+    const otherKey = await rest(`/audit/${change.id}/check-source`, { body: { text: emailBody } });
+    assert.equal(otherKey.status, 409);
+    assert.match(otherKey.data.error, /different key/);
+    await db`update audit_log set source = jsonb_set(source, '{digest,kid}', to_jsonb(${kid}::text)) where id = ${change.id}`;
+    // A key that must send a source on writes can still check without one.
+    const rk = (await rest("/keys", { body: { name: "Needs source fp", scopes: ["read", "write"], require_source: true } })).data;
+    const withRk = await rest(`/audit/${change.id}/check-source`, { body: { text: emailBody }, bearer: rk.key });
+    assert.equal(withRk.data.match, true, JSON.stringify(withRk.data));
+
+    // Size limit, and a key without read gets no check_source tool.
+    assert.match((await mcp("update_record", { id: deal.id, data: { stage: "Lead" }, source: { url: src.url, text: "x".repeat(1_000_001) } })).error!, /1,000,000/);
+    const wo = (await rest("/keys", { body: { name: "Write only fp mcp", scopes: ["write"] } })).data;
+    const tools = (await rpc("tools/list", {}, wo.key)).body.result.tools.map((t: any) => t.name);
+    assert.ok(tools.includes("update_record") && !tools.includes("check_source"));
+    // A caller can't pass its own hash off as one Open CRM made.
+    const forged = await mcp("update_record", { id: deal.id, data: { stage: "Proposal" }, source: { url: src.url, digest: `sha256:text-v1:${sha("x")}` } });
+    assert.equal(forged.error, undefined);
+    assert.equal((await auditFor(deal.id, "record.update")).source.digest.by, "client");
+
+    // Changes without a fingerprint, unknown ids, and bad input say so.
+    const create = await auditFor(deal.id, "record.create");
+    assert.match((await mcp("check_source", { id: create.id, text: "x" })).error!, /no source/);
+    assert.equal((await rest(`/audit/999999999/check-source`, { body: { text: "x" } })).status, 404);
+    assert.equal((await rest(`/audit/${change.id}/check-source`, { body: {} })).status, 400);
+    // Empty text is like no text: the link alone is kept.
+    assert.equal((await mcp("update_record", { id: deal.id, data: { stage: "Lead" }, source: { url: src.url, text: "   " } })).error, undefined);
+    assert.deepEqual((await auditFor(deal.id, "record.update")).source, { url: src.url });
+    assert.match((await mcp("update_record", { id: deal.id, data: { stage: "Lead" }, source: { url: src.url, text: "a", digest: "sha256:" + sha("a") } })).error!, /not both/);
+  });
+
+  it("accepts a hash the caller's tool made, marks it as reported, and compares hashes only in the same canon", async () => {
+    const co = (await mcp("create_record", { object: "companies", data: { name: "Digest co" } })).data;
+    const raw = "<html>Signed MSA</html>";
+    const reported = `sha256:gmail-raw-v1:${sha(raw).toUpperCase()}`;
+    const res = await fetch(`${BASE}/api/records/${co.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-source-url": "https://mail.example.com/raw/1", "x-source-digest": reported },
+      body: JSON.stringify({ name: "Digest co (signed)" }),
+    });
+    assert.equal(res.status, 200);
+    const change = await auditFor(co.id, "record.update");
+    assert.deepEqual(change.source.digest, { alg: "sha256", canon: "gmail-raw-v1", value: sha(raw), by: "client" });
+
+    // The CRM can't redo "gmail-raw-v1" from text, but can compare a hash from the same tool.
+    assert.match((await mcp("check_source", { id: change.id, text: raw })).error!, /can't reproduce/);
+    assert.equal((await mcp("check_source", { id: change.id, digest: `sha256:gmail-raw-v1:${sha(raw)}` })).data.match, true);
+    assert.equal((await mcp("check_source", { id: change.id, digest: `sha256:${sha(raw + "!")}` })).data.match, false);
+    assert.match((await mcp("check_source", { id: change.id, digest: `sha256:text-v1:${sha(raw)}` })).error!, /can't be compared/);
+
+    // A canon named like an Object.prototype property is just an unknown canon, not a crash.
+    const proto = (await mcp("create_record", { object: "companies", data: { name: "Proto co" }, source: { url: "https://e.com", digest: `sha256:constructor:${sha("x")}` } })).data;
+    const protoChange = await auditFor(proto.id, "record.create");
+    assert.match((await mcp("check_source", { id: protoChange.id, text: "x" })).error!, /can't reproduce/);
+    // Empty text is a valid check (the source was emptied): a mismatch, not an error.
+    assert.equal((await mcp("check_source", { id: (await auditFor(co.id, "record.update")).id, digest: `sha256:${sha("")}` })).data.match, false);
+
+    // No canon named: stored as "unspecified", so only another hash can be compared, never text.
+    const plain = (await mcp("create_record", { object: "companies", data: { name: "Plain digest co" }, source: { url: "https://e.com", digest: `sha256:${sha(raw)}` } })).data;
+    const plainChange = await auditFor(plain.id, "record.create");
+    assert.equal(plainChange.source.digest.canon, "unspecified");
+    assert.match((await mcp("check_source", { id: plainChange.id, text: raw })).error!, /can't reproduce/);
+    assert.equal((await mcp("check_source", { id: plainChange.id, digest: `sha256:${sha(raw)}` })).data.match, true);
+    // "raw" can be redone from exact text over the API.
+    const rawCo = (await mcp("create_record", { object: "companies", data: { name: "Raw co" }, source: { url: "https://e.com", digest: `sha256:raw:${sha("a\r\nb")}` } })).data;
+    const rawChange = await auditFor(rawCo.id, "record.create");
+    assert.equal((await rest(`/audit/${rawChange.id}/check-source`, { body: { text: "a\r\nb" } })).data.match, true);
+    assert.equal((await rest(`/audit/${rawChange.id}/check-source`, { body: { text: "a\nb" } })).data.match, false);
+    // A digest header without the link it belongs to is refused, not dropped.
+    const noUrl = await fetch(`${BASE}/api/records/${co.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-source-digest": reported },
+      body: JSON.stringify({ name: "No url" }),
+    });
+    assert.equal(noUrl.status, 400);
+    const badRestDigest = await fetch(`${BASE}/api/records/${co.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-source-url": "https://e.com", "x-source-digest": "sha256:nothex" },
+      body: JSON.stringify({ name: "Bad digest" }),
+    });
+    assert.equal(badRestDigest.status, 400);
+
+    // text-v1 test vector, as in the REST docs: NFC, White_Space runs to one space, only spaces trimmed (U+FEFF stays).
+    const vec = (await mcp("create_record", { object: "companies", data: { name: "Vector co" }, source: { url: "https://e.com", digest: `sha256:text-v1:${sha("\uFEFF Caf\u00e9")}` } })).data;
+    const vecChange = await auditFor(vec.id, "record.create");
+    assert.equal((await mcp("check_source", { id: vecChange.id, text: "\uFEFF Cafe\u0301\u0085\r\n" })).data.match, true);
+    assert.equal((await mcp("check_source", { id: vecChange.id, text: "Caf\u00e9" })).data.match, false);
+
+    // Made-up hashes are refused by shape.
+    for (const bad of ["sha256:abc", "md5:" + sha(raw), "sha256:a:b:c:" + sha(raw), "sha256:bad canon!:" + sha(raw)]) {
+      assert.match((await mcp("update_record", { id: co.id, data: { name: "x" }, source: { url: "https://e.com", digest: bad } })).error!, /digest/, bad);
+    }
+    // A key without read can't check sources.
+    const w = (await rest("/keys", { body: { name: "Write only fp", scopes: ["write"] } })).data;
+    assert.equal((await rest(`/audit/${change.id}/check-source`, { body: { text: raw }, bearer: w.key })).status, 403);
   });
 });
 

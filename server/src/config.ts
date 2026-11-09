@@ -9,6 +9,7 @@ export const config = {
   databaseSsl: process.env.DATABASE_SSL,
   adminPassword: process.env.ADMIN_PASSWORD,
   sessionSecret: process.env.SESSION_SECRET,
+  sourceDigestKey: process.env.SOURCE_DIGEST_KEY || undefined,
   publicUrl: process.env.PUBLIC_URL?.replace(/\/$/, ""),
   isProd: process.env.NODE_ENV === "production",
   /** Reverse proxies in front of the app that append to X-Forwarded-For (Caddy, Railway, Render…). 0 = none. */

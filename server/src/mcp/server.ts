@@ -1,6 +1,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { listTasks, logActivity, timeline, updateActivity, ACTIVITY_KINDS } from "../core/activities.js";
+import { checkStoredSource } from "../core/audit.js";
 import { requestOrApply } from "../core/changes.js";
 import {
   archiveRecord,
@@ -29,7 +30,7 @@ const INSTRUCTIONS = `Open CRM is the user's personal CRM. You are a first-class
 - You may grow the CRM: add fields or new objects when the user's data needs them. Write clear labels and descriptions.
 - Destructive schema changes (archive or retype a field, archive an object, remove options) go to the user for approval through request_schema_change.
 - Every write is attributed to you and visible in the record timeline and audit log.
-- When a write is based on something the user can open (an email, a calendar event, a document, a call recording), pass it as source {url, label}. The change history links to it.`;
+- When a write is based on something the user can open (an email, a calendar event, a document, a call recording), pass it as source {url, label}. The change history links to it. Add source.text with the text you read (e.g. the email body), copied exactly, to fingerprint it: only a hash is kept, and check_source can later tell whether the source still matches what you sent.`;
 
 /** Compact schema description that agents can read. */
 export function schemaForAgent(objects: ObjectType[]) {
@@ -74,6 +75,14 @@ const sourceSchema = z
   .object({
     url: z.string().describe("http(s) link to the email, message, document, meeting or page this write is based on"),
     label: z.string().optional().describe('Short description shown as the link text, e.g. "Email from Dana: we\'re ready to sign"'),
+    text: z
+      .string()
+      .optional()
+      .describe("The text you read (e.g. the email body), copied as-is. The CRM hashes it and keeps only the hash, so a later check_source can tell whether the source has changed. Not stored."),
+    digest: z
+      .string()
+      .optional()
+      .describe('A sha256 of the source made by one of your tools, as "sha256:<canon>:<hex>". Only pass a hash a tool computed; never write one yourself. It is stored as is, unkeyed, where read keys and webhooks see it, so short texts can be guessed from it: prefer text.'),
   })
   .optional()
   .describe("What this write is based on. Shown as a link on the change in the record timeline and audit log.");
@@ -144,6 +153,22 @@ export function buildMcpServer(actor: Actor) {
       "get_record",
       { title: "Get record", description: "Get a record with its related records (e.g. a company's people and deals) and recent timeline (notes, tasks, changes).", inputSchema: { id: idSchema }, annotations: ro },
       wrap(async ({ id }) => ({ ...(await getRecord(id)), timeline: await timeline(id, 25) })),
+    );
+
+    server.registerTool(
+      "check_source",
+      {
+        title: "Check a change's source",
+        description:
+          "Has the source of a change or note been edited since? Give the change or activity id (from a record's timeline) and the source's text as it reads now. The CRM prepares and hashes it the same way as the text passed with the write, and compares. Returns {match, source}; never a hash. Only works for writes made with source.text or source.digest.",
+        inputSchema: {
+          id: z.string().describe("A timeline item id: a change (number) or an activity (uuid)"),
+          text: z.string().optional().describe("The source's text as it reads now, copied as-is"),
+          digest: z.string().optional().describe('Or a hash made by the same tool that made the stored one, "sha256:<canon>:<hex>"'),
+        },
+        annotations: ro,
+      },
+      wrap(async ({ id, text, digest }) => checkStoredSource(/^\d+$/.test(id) ? "change" : "activity", id, { text, digest })),
     );
 
     server.registerTool(

@@ -8,7 +8,8 @@ import { undoEntry } from "../lib/undo";
 import { FieldInput, FieldValue } from "./fields";
 import { LinkChips, LinkPicker } from "./links";
 import { Select } from "./select";
-import { Avatar, Button, DueDate, ErrorBox, List, ObjIcon, Pill, SourceLink, Who } from "./ui";
+import { Avatar, Button, DueDate, ErrorBox, List, ObjIcon, Pill, Who } from "./ui";
+import { SourceLine } from "./source";
 
 export default function RecordDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const { data, error } = useQuery({ queryKey: ["record", id], queryFn: () => api<RecordDetail>(`/records/${id}`) });
@@ -236,7 +237,7 @@ function Timeline({ recordId, fields }: { recordId: string; fields: FieldDef[] }
                   )}
                   {t.body && <div className="mt-1 whitespace-pre-wrap">{t.body}</div>}
                   {t.links?.some((l) => l.id !== recordId) && <div className="mt-1 flex flex-wrap gap-1"><LinkChips links={t.links} exclude={recordId} /></div>}
-                  {t.source && <div className="mt-1"><SourceLink source={t.source} /></div>}
+                  {t.source && <div className="mt-1"><SourceLine source={t.source} kind="activity" id={t.id} /></div>}
                 </div>
               </li>
             );
@@ -253,7 +254,7 @@ function Timeline({ recordId, fields }: { recordId: string; fields: FieldDef[] }
                     : t.action === "record.update" && <Button size="sm" variant="ghost" className="ml-1 h-5" onClick={() => undoEntry(t.id)}>Undo</Button>}
                 </div>
                 {d.diff && <div className="mt-0.5 text-xs text-muted">{d.diff}</div>}
-                {t.source && <div className="mt-0.5"><SourceLink source={t.source} /></div>}
+                {t.source && <div className="mt-0.5"><SourceLine source={t.source} kind="change" id={t.id} /></div>}
               </div>
             </li>
           );

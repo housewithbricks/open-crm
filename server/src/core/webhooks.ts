@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
 import { sql } from "../db.js";
-import { CrmError, notFound } from "./types.js";
+import { CrmError, notFound, type Source } from "./types.js";
 
 export const WEBHOOK_EVENTS = [
   "record.created",
@@ -44,7 +44,7 @@ export type EventPayload = {
   before: unknown;
   after: unknown;
   /** Where the write came from, when the caller gave one. */
-  source: { url: string; label?: string } | null;
+  source: Source | null;
   at: string;
 };
 

@@ -2,7 +2,7 @@ import { json, sql, type Db } from "../db.js";
 import { audit, transaction } from "./audit.js";
 import { toDay, UUID_RE } from "./fields.js";
 import { writeReply } from "./records.js";
-import { CrmError, notFound, requireScope, requireSourceFor, type Actor } from "./types.js";
+import { CrmError, notFound, requireScope, requireSourceFor, type Actor, type Source } from "./types.js";
 
 export const ACTIVITY_KINDS = ["note", "call", "email", "meeting", "task"] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -19,7 +19,7 @@ export type Activity = {
   actor_name: string;
   created_at: string;
   deleted_at?: string | null;
-  source?: { url: string; label?: string } | null;
+  source?: Source | null;
 };
 
 /** Date-only input ("2026-11-09") is stored at noon UTC so it shows the same day in every timezone. */

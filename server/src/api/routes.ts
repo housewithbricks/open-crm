@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { deleteActivity, listTasks, logActivity, timeline, updateActivity } from "../core/activities.js";
-import { listAudit } from "../core/audit.js";
+import { checkStoredSource, listAudit } from "../core/audit.js";
 import { actorFromApiKey, createApiKey, listApiKeys, updateApiKey, login, revokeApiKey, signOutEverywhere, verifySession } from "../core/auth.js";
 import { decideChange, editField, listChanges, requestOrApply } from "../core/changes.js";
 import {
@@ -129,14 +129,21 @@ const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
  */
 function sourceFromHeaders(c: { req: { header: (h: string) => string | undefined } }) {
   const url = c.req.header("x-source-url");
-  if (!url) return undefined;
+  if (!url) {
+    if (c.req.header("x-source-digest")) throw new CrmError("X-Source-Digest needs X-Source-Url (the link to what was hashed)");
+    return undefined;
+  }
   let label = c.req.header("x-source-label");
   if (label) {
     try {
       label = decodeURIComponent(label);
     } catch {}
   }
-  return { url, label };
+  // A hash the client made of the source, e.g. "sha256:text-v1:<hex>". The text itself can't
+  // travel in a header; hash it with the documented text-v1 rules, or check later with
+  // POST /api/audit/:id/check-source.
+  const digest = c.req.header("x-source-digest");
+  return { url, label, digest };
 }
 
 // Everything below needs a session cookie or an API key (Bearer).
@@ -288,6 +295,13 @@ api.post("/audit/undo-batch", async (c) => {
   const { apply, ...filter } = await jsonBody(c);
   return c.json(apply === true ? await applyBatchUndo(c.get("actor"), filter) : await planBatchUndo(filter));
 });
+/** Does the source still read the same as when the change was made? Body: {text} or {digest}. */
+for (const kind of ["change", "activity"] as const) {
+  api.post(`/${kind === "change" ? "audit" : "activities"}/:id/check-source`, async (c) => {
+    requireScope(c.get("actor"), "read"); // a POST, so the read check above doesn't cover it
+    return c.json(await checkStoredSource(kind, c.req.param("id"), await jsonBody(c)));
+  });
+}
 api.post("/audit/:id/undo", async (c) => {
   userOnly(c);
   const { force } = await jsonBody(c).catch(() => ({ force: false }));

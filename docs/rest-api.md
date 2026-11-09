@@ -45,6 +45,19 @@ X-Source-Label: Email%20from%20Dana   (optional; percent-encode anything that is
 
 The link is stored on the audit entry (and on a note or task you create). It is returned as `source` in the timeline and the audit log, and sent in webhook payloads. Only `http(s)` URLs are accepted; anything else is a `400`.
 
+To fingerprint the source, also send `X-Source-Digest: sha256:<canon>:<hex>`, a SHA-256 your code made. It needs `X-Source-Url`; sending it alone is a `400`. Name the canon after how you prepared the bytes:
+
+- `text-v1`: NFC-normalize, replace each run of Unicode `White_Space` characters (U+0009–U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) with one space, drop the leading and trailing space if there is one (nothing else, so U+FEFF stays), then hash the UTF-8 bytes. For example, `"\uFEFF Café\u0085\r\n"` (with the é as `e` + U+0301) becomes `"\uFEFF Café"` (é as U+00E9).
+- `raw`: the UTF-8 bytes as they are.
+- Your own name for any other format.
+
+Without a canon (`sha256:<hex>`), it is stored as `unspecified`. Your digest is stored as you sent it, unkeyed, and every read key and webhook sees it. Anyone can hash candidate texts and compare, so for a short or guessable source ("Yes, approved") it effectively reveals the text. The digest is stored on the change as `source.digest` `{alg, canon, value, by: "client"}` and sent in webhook payloads. (MCP clients can send `source.text` instead. Open CRM then stores its own salted `hmac-sha256` fingerprint, `by: "crm"`, under a per-install key it never sends out. See [Connecting agents](connecting-agents.md#source-links).)
+
+To check later whether the source still reads the same, call `POST /api/audit/:id/check-source` (or `/api/activities/:id/check-source`). The response is `{match, source}`. It never includes a hash of what you sent, so it can't be used to build a table of guesses. A `409` means the fingerprint was made with a different `SOURCE_DIGEST_KEY` and can't be checked; it doesn't mean the source changed. A deleted note's `/activities/:id/check-source` is a `404`, but the audit entry that logged it stays in the audit log and can still be checked. It needs the `read` scope. The body is one of:
+
+- `{"text": "…"}`, for the canons `text-v1` and `raw`, including Open CRM's own fingerprints.
+- `{"digest": "sha256:<canon>:<hex>"}`, for a client digest. A digest without a canon is compared as the stored one.
+
 A key created with `"require_source": true` must send `X-Source-Url` on every record and activity write, or it gets a `400` and nothing is changed.
 
 ## Errors
@@ -124,5 +137,6 @@ Field types: `text`, `long_text`, `number`, `currency`, `date`, `boolean`, `sele
 |---|---|
 | `GET /api/settings`, `PATCH /api/settings` | Theme and accent color. Reading needs `read`; changing needs a session. |
 | `GET/POST /api/webhooks`, `PATCH/DELETE /api/webhooks/:id`, `POST /api/webhooks/:id/test` | Webhooks. |
+| `POST /api/audit/:id/check-source`, `POST /api/activities/:id/check-source` | Compare a change's source fingerprint with `{text}` or `{digest}`. See [Source links](#source-links). |
 | `GET/POST /api/keys`, `PATCH/DELETE /api/keys/:id` | API keys. `POST` takes `{name, scopes, require_source?}`; `PATCH` takes `{require_source}`. |
 | `POST /api/logout-all` | Sign out every browser. API keys keep working. |

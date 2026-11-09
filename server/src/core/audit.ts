@@ -1,6 +1,7 @@
 import type postgres from "postgres";
 import { json, sql, type Db } from "../db.js";
-import type { Actor } from "./types.js";
+import { UUID_RE } from "./fields.js";
+import { compareSource, CrmError, notFound, type Actor, type Source } from "./types.js";
 import { emit, eventForAction, type EventPayload } from "./webhooks.js";
 
 /** Webhook events from audits inside a `transaction`, held until it commits. */
@@ -58,4 +59,21 @@ export async function listAudit(limit = 100, targetId?: string) {
   return sql`select * from audit_log
              ${targetId ? sql`where target_id = ${targetId}` : sql``}
              order by id desc limit ${limit}`;
+}
+
+/**
+ * Compare the source fingerprint stored on a change (audit entry) or activity with the source
+ * as it reads now. Pass the text (hashed the way the stored digest was) or a digest made by the
+ * same tool that made the stored one.
+ */
+export async function checkStoredSource(kind: "change" | "activity", id: string, input: { text?: unknown; digest?: unknown }) {
+  const rows =
+    kind === "change"
+      ? /^\d{1,18}$/.test(id) ? await sql<{ source: Source | null }[]>`select source from audit_log where id = ${id}` : []
+      : UUID_RE.test(id) ? await sql<{ source: Source | null }[]>`select source from activities where id = ${id} and deleted_at is null` : [];
+  if (!rows.length) throw notFound(kind === "change" ? "Change" : "Activity");
+  const source = rows[0].source;
+  if (!source) throw new CrmError(`This ${kind} has no source`);
+  if (!source.digest) throw new CrmError(`This ${kind}'s source has no fingerprint to check against. Only writes that passed source.text or source.digest have one.`);
+  return { source: { url: source.url, label: source.label ?? null }, ...compareSource(source.digest, input) };
 }

@@ -1,8 +1,8 @@
 import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { config } from "../config.js";
-import { getSetting, setSetting, sql } from "../db.js";
-import { CrmError, type Actor, type Scope } from "./types.js";
+import { getSetting, json, setSetting, sql } from "../db.js";
+import { CrmError, setSourceKey, type Actor, type Scope } from "./types.js";
 
 const SESSION_DAYS = 30;
 let sessionSecret = "";
@@ -22,6 +22,9 @@ async function checkPassword(pw: string, stored: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** 64+ hex characters, or base64 of at least 32 bytes. */
+const looksRandom = (k: string) => /^[0-9a-f]{64,}$/i.test(k) || (/^[A-Za-z0-9+/_-]{43,}={0,2}$/.test(k) && Buffer.from(k, "base64").length >= 32);
+
 /** Set up the admin password and the session secret on boot. */
 export async function initAuth() {
   sessionSecret = config.sessionSecret ?? (await getSetting<string>("session_secret")) ?? "";
@@ -29,6 +32,36 @@ export async function initAuth() {
     sessionSecret = randomBytes(32).toString("hex");
     await setSetting("session_secret", sessionSecret);
   }
+  // Key for source fingerprints. Separate from the session secret, so rotating SESSION_SECRET
+  // doesn't make every stored fingerprint uncheckable. SOURCE_DIGEST_KEY keeps it out of the
+  // database (and its backups); with a different key, existing fingerprints can't be checked (409).
+  // It must be random: its kid is public, so a passphrase could be guessed offline.
+  if (config.sourceDigestKey && !looksRandom(config.sourceDigestKey)) {
+    const msg = "[auth] SOURCE_DIGEST_KEY must be random: 64+ hex characters or base64 of 32+ bytes (e.g. openssl rand -hex 32).";
+    if (config.isProd) throw new Error(msg);
+    console.warn(msg);
+  }
+  const storedSourceKey = await getSetting<string>("source_digest_key");
+  if (config.sourceDigestKey && storedSourceKey) {
+    if (storedSourceKey === config.sourceDigestKey) {
+      // Not deleted here: another instance (rolling deploy, job container) may still start
+      // without the env var, and would then make a second key.
+      console.log("[auth] SOURCE_DIGEST_KEY matches the key stored in the database. Once every instance has it, remove the database copy: delete from settings where key = 'source_digest_key';");
+    } else {
+      console.warn("[auth] SOURCE_DIGEST_KEY differs from the key in the database: fingerprints made with the stored key can't be checked. Set it to the stored value to keep them.");
+    }
+  }
+  let sourceKey = config.sourceDigestKey ?? storedSourceKey;
+  if (!sourceKey) {
+    const [old] = await sql`select 1 from audit_log where source->'digest'->>'by' = 'crm' limit 1`;
+    if (old) {
+      console.warn("[auth] No source digest key (SOURCE_DIGEST_KEY unset and none in the database), but fingerprints exist: making a new key. Fingerprints made with the old key can't be checked until SOURCE_DIGEST_KEY is set back to it.");
+    }
+    sourceKey = randomBytes(32).toString("hex");
+    await sql`insert into settings (key, value) values ('source_digest_key', ${json(sourceKey)}::jsonb) on conflict (key) do nothing`;
+    sourceKey = (await getSetting<string>("source_digest_key"))!;
+  }
+  setSourceKey(sourceKey);
   if (config.adminPassword && /^(change-?me|password|admin)$/i.test(config.adminPassword)) {
     const msg = `[auth] ADMIN_PASSWORD is still the placeholder "${config.adminPassword}". Set a real password.`;
     if (config.isProd) throw new Error(msg);
