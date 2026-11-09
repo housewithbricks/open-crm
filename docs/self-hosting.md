@@ -118,7 +118,7 @@ The button reads [`render.yaml`](../render.yaml). It creates a web service from 
 
 ## Railway
 
-1. **New Project → Deploy from GitHub repo** and pick your repo. Railway builds the `Dockerfile` (see [`railway.json`](../railway.json)).
+1. **New Project → Deploy from GitHub repo** and pick your repo. Railway finds the `Dockerfile` and builds it.
 2. **+ New → Database → PostgreSQL** in the same project.
 3. On the app service, set these variables:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
@@ -126,6 +126,7 @@ The button reads [`render.yaml`](../render.yaml). It creates a web service from 
    - `PUBLIC_URL` = your Railway domain (next step)
    - Optional: `SOURCE_DIGEST_KEY` = the output of `openssl rand -hex 32`, to keep the source-fingerprint key out of the database and its backups (see [What the container needs](#what-the-container-needs)). Without it, Open CRM generates one into the database on first start. Set it on every service and environment that shares the database, before removing the database copy.
 4. **Settings → Networking → Generate Domain.**
+5. **Settings → Deploy → Healthcheck Path** = `/health`, so a deploy only goes live once the app answers.
 
 Railway redeploys on every push to the connected branch. Migrations run on start.
 

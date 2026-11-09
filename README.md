@@ -111,7 +111,7 @@ web/src
 site/          landing page + its nginx container
 deploy/        prebuilt-image compose file and Caddyfile
 docs/          self-hosting guide
-render.yaml, app.json + heroku.yml, .do/, fly.toml, railway.json   one-click / platform configs
+render.yaml, app.json + heroku.yml, .do/, fly.toml   one-click / platform configs (Railway needs none: see docs/self-hosting.md)
 ```
 
 **Rule:** business logic lives only in `server/src/core`. REST and MCP stay thin, so the UI and agents always behave the same way.
