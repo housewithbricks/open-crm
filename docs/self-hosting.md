@@ -124,7 +124,10 @@ The button reads [`render.yaml`](../render.yaml). It creates a web service from 
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `ADMIN_PASSWORD` = a strong password
    - `PUBLIC_URL` = your Railway domain (next step)
+   - Optional: `SOURCE_DIGEST_KEY` = the output of `openssl rand -hex 32`, to keep the source-fingerprint key out of the database and its backups (see [What the container needs](#what-the-container-needs)). Without it, Open CRM generates one into the database on first start. Set it on every service and environment that shares the database, before removing the database copy.
 4. **Settings → Networking → Generate Domain.**
+
+Railway redeploys on every push to the connected branch. Migrations run on start.
 
 **One-click button for your fork.** In Railway, open the project and choose **Settings → Create template** (or publish it from the Templates page). Railway gives you a URL like `https://railway.com/deploy/abc123`. Use it in a button:
 
