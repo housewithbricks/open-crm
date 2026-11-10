@@ -2,7 +2,7 @@
 
 # Open CRM
 
-[![M8ven Score](https://m8ven.ai/badge/mcp/housewithbricks/open-crm)](https://m8ven.ai/mcp/housewithbricks/open-crm?s=readme)
+[![M8ven Score](https://m8ven.ai/badge/mcp/housewithbricks-open-crm-ukxhxw?v=271b26ce68dd14893304aa3e89632a9c)](https://m8ven.ai/mcp/housewithbricks-open-crm-ukxhxw?s=readme)
 
 **Your server. Your data. Your agents.**
 
