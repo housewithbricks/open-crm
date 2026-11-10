@@ -101,7 +101,14 @@ export function buildMcpServer(actor: Actor) {
     : INSTRUCTIONS;
   const server = new McpServer({ name: "open-crm", version: VERSION }, { instructions });
   const can = (s: Actor["scopes"][number]) => actor.scopes.includes(s);
-  const ro = { readOnlyHint: true, openWorldHint: false };
+  // Every tool declares all four hints explicitly. Nothing here reaches outside this CRM.
+  const ro = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+  /** Adds something new; calling it twice adds it twice. */
+  const add = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+  /** Overwrites existing values; repeating the same call changes nothing more. */
+  const overwrite = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+  /** Removes or hides something; repeating it changes nothing more. */
+  const remove = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
 
   /* ----------------------------- read ----------------------------- */
   if (can("read")) {
@@ -232,7 +239,7 @@ export function buildMcpServer(actor: Actor) {
   if (can("write")) {
     server.registerTool(
       "create_record",
-      { title: "Create record", description: "Create a record. Prefer upsert_record when a unique field (email, domain) is known.", inputSchema: { object: z.string(), data: dataSchema, source: sourceSchema } },
+      { title: "Create record", description: "Create a record. Prefer upsert_record when a unique field (email, domain) is known.", inputSchema: { object: z.string(), data: dataSchema, source: sourceSchema }, annotations: add },
       wrap(async ({ object, data, source }) => {
         const rec = await createRecord(withSource(actor, source), object, data);
         return writeReply(actor, "created", rec.id, rec);
@@ -241,7 +248,7 @@ export function buildMcpServer(actor: Actor) {
 
     server.registerTool(
       "update_record",
-      { title: "Update record", description: "Update some fields of a record. Set a field to null to clear it.", inputSchema: { id: idSchema, data: dataSchema, source: sourceSchema }, annotations: { idempotentHint: true } },
+      { title: "Update record", description: "Update some fields of a record. Set a field to null to clear it.", inputSchema: { id: idSchema, data: dataSchema, source: sourceSchema }, annotations: overwrite },
       wrap(async ({ id, data, source }) => {
         const rec = await updateRecord(withSource(actor, source), id, data);
         return writeReply(actor, "updated", rec.id, rec);
@@ -250,7 +257,7 @@ export function buildMcpServer(actor: Actor) {
 
     server.registerTool(
       "upsert_record",
-      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}, or {id, action} for a key without the read scope.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema, source: sourceSchema }, annotations: { idempotentHint: true } },
+      { title: "Upsert record", description: "Find a record by match_on (e.g. email, domain, name), case-insensitively. Update it if found, otherwise create it. Returns {action, record}, or {id, action} for a key without the read scope.", inputSchema: { object: z.string(), match_on: z.string(), data: dataSchema, source: sourceSchema }, annotations: overwrite },
       wrap(async ({ object, match_on, data, source }) => {
         const r = await upsertRecord(withSource(actor, source), object, match_on, data);
         return writeReply(actor, r.action, r.record.id, r);
@@ -269,7 +276,7 @@ export function buildMcpServer(actor: Actor) {
           add_missing_options: z.boolean().optional().describe("Add unknown select values as options (needs schema scope)"),
           source: sourceSchema.describe("What these writes are based on, e.g. a spreadsheet. Applies to every row."),
         },
-        annotations: { idempotentHint: true },
+        annotations: { ...overwrite, idempotentHint: false },
       },
       wrap(async ({ object, match_on, records, add_missing_options, source }) => {
         const r = await importRows(withSource(actor, source), object, records, { match_on, add_missing_options });
@@ -292,6 +299,7 @@ export function buildMcpServer(actor: Actor) {
           dir: z.enum(["asc", "desc"]).optional(),
           group_by: z.string().optional().describe("board only: select field to group by"),
         },
+        annotations: add,
       },
       wrap(async ({ object, name, query, ...cfg }) => createView(actor, object, { name, config: { ...cfg, q: query } as any })),
     );
@@ -311,7 +319,7 @@ export function buildMcpServer(actor: Actor) {
           dir: z.enum(["asc", "desc"]).optional(),
           group_by: z.string().optional(),
         },
-        annotations: { idempotentHint: true },
+        annotations: overwrite,
       },
       wrap(async ({ view_id, name, query, ...cfg }) => {
         const [cur] = (await listViewsById(view_id));
@@ -322,13 +330,13 @@ export function buildMcpServer(actor: Actor) {
 
     server.registerTool(
       "delete_view",
-      { title: "Delete view", description: "Delete a saved view. Records are not affected.", inputSchema: { view_id: z.string() }, annotations: { destructiveHint: true } },
+      { title: "Delete view", description: "Delete a saved view. Records are not affected.", inputSchema: { view_id: z.string() }, annotations: remove },
       wrap(async ({ view_id }) => deleteView(actor, view_id)),
     );
 
     server.registerTool(
       "archive_record",
-      { title: "Archive record", description: "Soft-delete a record. The user can restore it from the UI.", inputSchema: { id: idSchema, source: sourceSchema }, annotations: { destructiveHint: true } },
+      { title: "Archive record", description: "Soft-delete a record. The user can restore it from the UI.", inputSchema: { id: idSchema, source: sourceSchema }, annotations: remove },
       wrap(async ({ id, source }) => archiveRecord(withSource(actor, source), id)),
     );
 
@@ -344,6 +352,7 @@ export function buildMcpServer(actor: Actor) {
           body: z.string(),
           source: sourceSchema,
         },
+        annotations: add,
       },
       wrap(async ({ source, ...a }) => logActivity(withSource(actor, source), a)),
     );
@@ -354,13 +363,14 @@ export function buildMcpServer(actor: Actor) {
         title: "Create task",
         description: "Create a follow-up task. Link it to any number of records from any objects (people, companies, deals, custom objects). Due date as YYYY-MM-DD or ISO.",
         inputSchema: { title: z.string(), record_ids: z.array(idSchema).optional().describe("Records this task is about"), due_at: z.string().optional(), body: z.string().optional(), source: sourceSchema },
+        annotations: add,
       },
       wrap(async ({ source, ...a }) => logActivity(withSource(actor, source), { ...a, kind: "task" })),
     );
 
     server.registerTool(
       "complete_task",
-      { title: "Complete task", description: "Mark a task done, or reopen it with done=false.", inputSchema: { task_id: z.string(), done: z.boolean().optional(), source: sourceSchema }, annotations: { idempotentHint: true } },
+      { title: "Complete task", description: "Mark a task done, or reopen it with done=false.", inputSchema: { task_id: z.string(), done: z.boolean().optional(), source: sourceSchema }, annotations: { ...overwrite, destructiveHint: false } },
       wrap(async ({ task_id, done, source }) => updateActivity(withSource(actor, source), task_id, { done: done ?? true }, { taskOnly: true })),
     );
 
@@ -377,7 +387,7 @@ export function buildMcpServer(actor: Actor) {
           record_ids: z.array(idSchema).optional().describe("The complete new list of linked records"),
           source: sourceSchema,
         },
-        annotations: { idempotentHint: true },
+        annotations: overwrite,
       },
       wrap(async ({ task_id, source, ...patch }) => updateActivity(withSource(actor, source), task_id, patch, { taskOnly: true })),
     );
@@ -400,19 +410,19 @@ export function buildMcpServer(actor: Actor) {
 
     server.registerTool(
       "create_object_type",
-      { title: "Create object", description: "Add a new kind of record to the CRM (e.g. Investors, Properties, Projects). A required 'name' field is added automatically unless provided.", inputSchema: { label: z.string().describe("Singular, e.g. Investor"), label_plural: z.string().optional(), slug: z.string().optional(), description: z.string().optional(), icon: z.string().optional(), color: colorSchema.optional(), fields: z.array(z.object(fieldInput)).optional() } },
+      { title: "Create object", description: "Add a new kind of record to the CRM (e.g. Investors, Properties, Projects). A required 'name' field is added automatically unless provided.", inputSchema: { label: z.string().describe("Singular, e.g. Investor"), label_plural: z.string().optional(), slug: z.string().optional(), description: z.string().optional(), icon: z.string().optional(), color: colorSchema.optional(), fields: z.array(z.object(fieldInput)).optional() }, annotations: add },
       wrap(async (a) => schemaForAgent([await createObjectType(actor, a)])[0]),
     );
 
     server.registerTool(
       "update_object_type",
-      { title: "Update object", description: "Rename an object, change its description, icon or color, or change its primary (display) field.", inputSchema: { object: z.string(), label: z.string().optional(), label_plural: z.string().optional(), description: z.string().optional(), icon: z.string().optional(), color: colorSchema.optional(), primary_field: z.string().optional() } },
+      { title: "Update object", description: "Rename an object, change its description, icon or color, or change its primary (display) field.", inputSchema: { object: z.string(), label: z.string().optional(), label_plural: z.string().optional(), description: z.string().optional(), icon: z.string().optional(), color: colorSchema.optional(), primary_field: z.string().optional() }, annotations: overwrite },
       wrap(async ({ object, ...patch }) => schemaForAgent([await updateObjectType(actor, object, patch)])[0]),
     );
 
     server.registerTool(
       "add_field",
-      { title: "Add field", description: "Add a field to an object. It appears immediately in the UI.", inputSchema: { object: z.string(), ...fieldInput } },
+      { title: "Add field", description: "Add a field to an object. It appears immediately in the UI.", inputSchema: { object: z.string(), ...fieldInput }, annotations: add },
       wrap(async ({ object, ...f }) => addField(actor, object, f)),
     );
 
@@ -436,6 +446,7 @@ export function buildMcpServer(actor: Actor) {
             probability: z.number().min(0).max(100).optional(),
           })).optional(),
         },
+        annotations: overwrite,
       },
       wrap(async ({ object, field, options, ...patch }) => {
         if (!options) return updateField(actor, object, field, patch);
@@ -462,7 +473,7 @@ export function buildMcpServer(actor: Actor) {
           values: z.array(z.string()).optional().describe("remove_choices only"),
           reason: z.string().describe("Why. Shown to the user."),
         },
-        annotations: { destructiveHint: true },
+        annotations: { ...add, destructiveHint: true },
       },
       wrap(async ({ reason, ...c }) => {
         await getObject(c.object);
