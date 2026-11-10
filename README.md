@@ -2,6 +2,8 @@
 
 # Open CRM
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/housewithbricks/open-crm)](https://m8ven.ai/mcp/housewithbricks/open-crm?s=readme)
+
 **Your server. Your data. Your agents.**
 
 A small, self-hosted CRM where **you and your AI agents are equal clients**. It has a web UI for you and an MCP server for Claude or any other MCP client. Both sit on the same service layer, and the agent can grow the CRM itself: new objects, new fields, new options.
